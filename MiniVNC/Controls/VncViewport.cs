@@ -118,6 +118,13 @@ public class VncViewport : Control
             // 释放所有按下的按键
             ReleaseAllKeys();
         };
+
+        // 控件卸载（会话窗口关闭）时释放最后一个自定义光标句柄，避免句柄泄漏
+        Unloaded += (s, e) =>
+        {
+            _remoteCursor?.Dispose();
+            _remoteCursor = null;
+        };
     }
 
     /// <summary>

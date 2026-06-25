@@ -139,6 +139,10 @@ public sealed class VncClient : IDisposable
     private readonly object _writeLock = new();
     private bool _disposed;
 
+    // ---- 光标去重（仅消息循环线程访问，无需加锁）----
+    private byte[]? _lastCursorBgra;
+    private int _lastCursorW, _lastCursorH, _lastCursorHotX, _lastCursorHotY;
+
     /// <summary>
     /// 创建 <see cref="VncClient"/>。
     /// 注册的解码器：Raw、Hextile（CopyRect 在消息循环中内联处理）。
@@ -644,6 +648,11 @@ public sealed class VncClient : IDisposable
     {
         if (_stream == null) return;
 
+        // 上限保护：真实光标极小（通常 ≤128px）。拒绝异常尺寸，防止 w*h 整数溢出与
+        // 超大分配/读取（恶意服务器或流错位时）；这种值几乎必为协议错位，断开比继续读垃圾更安全。
+        if (w > 1024 || h > 1024)
+            throw new IOException($"光标尺寸异常: {w}x{h}");
+
         int bpp = PixelFormat.BytesPerPixel;
         int pixelLen = w * h * bpp;
         int maskRowBytes = (w + 7) / 8;          // 每行掩码字节数（向上取整到位）
@@ -652,9 +661,12 @@ public sealed class VncClient : IDisposable
         byte[] pixelData = pixelLen > 0 ? await _stream.ReadExactlyAsync(pixelLen, ct) : Array.Empty<byte>();
         byte[] mask = maskLen > 0 ? await _stream.ReadExactlyAsync(maskLen, ct) : Array.Empty<byte>();
 
-        // 空光标：服务器要求隐藏光标 → 通知 UI 回退默认指针
+        // 空光标：服务器要求隐藏光标 → 通知 UI 回退默认指针（与上次相同则跳过）
         if (w == 0 || h == 0)
         {
+            if (_lastCursorW == 0 && _lastCursorH == 0) return;
+            _lastCursorBgra = null;
+            _lastCursorW = _lastCursorH = _lastCursorHotX = _lastCursorHotY = 0;
             CursorChanged?.Invoke(this, new CursorUpdateEventArgs(Array.Empty<byte>(), 0, 0, 0, 0));
             return;
         }
@@ -674,6 +686,14 @@ public sealed class VncClient : IDisposable
                 if (!visible) bgra[di + 3] = 0;        // 透明
             }
         }
+
+        // 去重：与上次光标完全相同则跳过，避免服务器逐帧重发时频繁重建 HCURSOR。
+        if (_lastCursorW == w && _lastCursorH == h && _lastCursorHotX == hotspotX && _lastCursorHotY == hotspotY
+            && _lastCursorBgra != null && _lastCursorBgra.AsSpan().SequenceEqual(bgra))
+            return;
+
+        _lastCursorBgra = bgra;
+        _lastCursorW = w; _lastCursorH = h; _lastCursorHotX = hotspotX; _lastCursorHotY = hotspotY;
 
         CursorChanged?.Invoke(this, new CursorUpdateEventArgs(bgra, w, h, hotspotX, hotspotY));
     }

@@ -236,9 +236,9 @@ public sealed class RfbProtocol : IDisposable
 
     /// <summary>
     /// 发送 ClientCutText 消息（剪贴板文本）。
-    /// 自适应编码：全部字符可用 Latin-1 表示时用 Latin-1（符合 RFB 3.8 规范、兼容性最好）；
-    /// 含中文等非 Latin-1 字符时改用 UTF-8（Latin-1 会把这些字符变成 '?'，UTF-8 严格更好，
-    /// 且现代对端多按 UTF-8 解析）。
+    /// 本工具面向 macOS：macOS 屏幕共享的剪贴板实际按 UTF-8 收发（Apple 对 RFB "Latin-1" 规范的偏离），
+    /// 故一律用 UTF-8 编码——纯 ASCII 与 Latin-1 字节相同；中文/Emoji/西欧重音字符均能正确到达 Mac。
+    /// （若改连严格 Latin-1 的非 Mac 服务器，西欧字符可能乱码，属可接受的取舍。）
     /// </summary>
     public void WriteCutText(string text)
     {
@@ -253,17 +253,10 @@ public sealed class RfbProtocol : IDisposable
     private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
     /// <summary>
-    /// 自适应编码剪贴板文本：可被 Latin-1 完整表示则用 Latin-1，否则用 UTF-8。
+    /// 编码剪贴板文本为 UTF-8。面向 macOS（其屏幕共享按 UTF-8 收发剪贴板）；
+    /// 纯 ASCII 时 UTF-8 字节与 Latin-1 完全相同，不影响标准服务器。
     /// </summary>
-    private static byte[] EncodeCutText(string text)
-    {
-        bool latin1Ok = true;
-        foreach (char c in text)
-        {
-            if (c > 0xFF) { latin1Ok = false; break; }
-        }
-        return latin1Ok ? Encoding.Latin1.GetBytes(text) : Encoding.UTF8.GetBytes(text);
-    }
+    private static byte[] EncodeCutText(string text) => Encoding.UTF8.GetBytes(text);
 
     /// <summary>
     /// 自适应解码剪贴板字节：先按严格 UTF-8 解析（中文/Emoji 可正确还原），

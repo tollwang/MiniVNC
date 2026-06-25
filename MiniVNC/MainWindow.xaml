@@ -201,14 +201,16 @@
                                 <Setter Property="BorderThickness" Value="0,0,0,1"/>
                                 <Setter Property="Padding" Value="8,4"/>
                                 <Setter Property="Template">
-                                    <ControlTemplate TargetType="GridViewColumnHeader">
-                                        <Border Background="{TemplateBinding Background}"
-                                                BorderBrush="{TemplateBinding BorderBrush}"
-                                                BorderThickness="{TemplateBinding BorderThickness}"
-                                                Padding="{TemplateBinding Padding}">
-                                            <ContentPresenter/>
-                                        </Border>
-                                    </ControlTemplate>
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="GridViewColumnHeader">
+                                            <Border Background="{TemplateBinding Background}"
+                                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                                    Padding="{TemplateBinding Padding}">
+                                                <ContentPresenter/>
+                                            </Border>
+                                        </ControlTemplate>
+                                    </Setter.Value>
                                 </Setter>
                             </Style>
                         </GridView.ColumnHeaderContainerStyle>

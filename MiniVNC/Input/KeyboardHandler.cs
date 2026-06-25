@@ -1,5 +1,6 @@
 using System.Linq;
 using System.Windows.Input;
+using MiniVNC.Core;
 
 namespace MiniVNC.Input;
 

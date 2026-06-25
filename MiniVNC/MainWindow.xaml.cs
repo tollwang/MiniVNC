@@ -413,7 +413,7 @@ public class ConnectionDialog : Window
             Background = new SolidColorBrush(Color.FromRgb(0x2D, 0x2D, 0x30)),
             Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
             BorderBrush = new SolidColorBrush(Color.FromRgb(0x3E, 0x3E, 0x42)),
-            Padding = new Thickness(6, 4),
+            Padding = new Thickness(6, 4, 6, 4),
             CaretBrush = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC))
         };
 
@@ -442,7 +442,7 @@ public class ConnectionDialog : Window
             Background = new SolidColorBrush(Color.FromRgb(0x2D, 0x2D, 0x30)),
             Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
             BorderBrush = new SolidColorBrush(Color.FromRgb(0x3E, 0x3E, 0x42)),
-            Padding = new Thickness(6, 4),
+            Padding = new Thickness(6, 4, 6, 4),
             CaretBrush = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC))
         };
 

@@ -1,3 +1,4 @@
+using System.IO;
 using System.Net.Sockets;
 using MiniVNC.Network;
 using MiniVNC.Protocol;

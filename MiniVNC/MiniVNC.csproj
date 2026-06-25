@@ -36,4 +36,10 @@
   <!-- WPF SDK 会自动把 App.xaml 当作 ApplicationDefinition、其余 *.xaml 当作 Page 包含进来，
        无需手动声明；手动再写一遍会触发 NETSDK1022“重复 Page 项”错误。 -->
 
+  <!-- 项目内多处使用 System.IO（File/Path/Directory/Stream）但未逐一 using，
+       这里设为全局 using，一次性消除整类 CS0246/CS0103 错误，且不受 IDE 自动整理 import 影响。 -->
+  <ItemGroup>
+    <Using Include="System.IO" />
+  </ItemGroup>
+
 </Project>

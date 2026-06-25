@@ -1,0 +1,17 @@
+# ---- .NET 编译产物 ----
+bin/
+obj/
+publish/
+*.user
+*.suo
+
+# ---- IDE ----
+.vs/
+.idea/
+*.userprefs
+
+# ---- macOS ----
+.DS_Store
+
+# ---- 日志 ----
+*.log

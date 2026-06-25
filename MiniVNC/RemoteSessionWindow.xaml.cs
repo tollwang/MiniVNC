@@ -125,6 +125,7 @@ public partial class RemoteSessionWindow : Window
         _client.Disconnected += OnDisconnected;
         _client.ServerClipboardChanged += OnServerClipboardChanged;
         _client.ErrorOccurred += OnError;
+        _client.CursorChanged += OnCursorChanged;
     }
 
     /// <summary>解绑 VNC 客户端事件。</summary>
@@ -136,6 +137,7 @@ public partial class RemoteSessionWindow : Window
         _client.Disconnected -= OnDisconnected;
         _client.ServerClipboardChanged -= OnServerClipboardChanged;
         _client.ErrorOccurred -= OnError;
+        _client.CursorChanged -= OnCursorChanged;
     }
 
     /// <summary>
@@ -380,6 +382,15 @@ public partial class RemoteSessionWindow : Window
     private void OnError(object? sender, Exception ex)
     {
         UpdateStatus($"错误: {ex.Message}");
+    }
+
+    /// <summary>
+    /// 远程光标形状变化（Cursor 伪编码 -239）→ 在 UI 线程更新本地渲染的光标。
+    /// </summary>
+    private void OnCursorChanged(object? sender, CursorUpdateEventArgs e)
+    {
+        Dispatcher.BeginInvoke(() =>
+            VncViewport.SetRemoteCursor(e.Bgra, e.Width, e.Height, e.HotspotX, e.HotspotY));
     }
 
     /// <summary>

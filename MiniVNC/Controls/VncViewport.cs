@@ -43,6 +43,9 @@ public class VncViewport : Control
     /// </summary>
     private readonly Dictionary<Key, uint> _pressedKeys = new();
 
+    /// <summary>当前自定义远程光标（来自 Cursor 伪编码 -239）。用于替换时释放上一个句柄。</summary>
+    private System.Windows.Input.Cursor? _remoteCursor;
+
     #region 依赖属性
 
     /// <summary>
@@ -458,6 +461,90 @@ public class VncViewport : Control
         _client.SendKeyEvent(0xFFEB, false); // Win/Command
         _client.SendKeyEvent(0xFFEC, false); // Win_R/Command_R
     }
+
+    #endregion
+
+    #region 远程光标（Cursor 伪编码 -239）
+
+    /// <summary>
+    /// 应用服务器推送的光标形状（本地渲染，零延迟、形状与 Mac 一致、且避免重影）。
+    /// w/h 为 0 或构建失败时回退默认箭头。须在 UI 线程调用。
+    /// </summary>
+    public void SetRemoteCursor(byte[] bgra, int width, int height, int hotspotX, int hotspotY)
+    {
+        System.Windows.Input.Cursor newCursor;
+        try
+        {
+            if (width > 0 && height > 0 && width <= 256 && height <= 256 && bgra.Length >= width * height * 4)
+            {
+                newCursor = BuildCursor(bgra, width, height,
+                    Math.Clamp(hotspotX, 0, width - 1),
+                    Math.Clamp(hotspotY, 0, height - 1));
+            }
+            else
+            {
+                newCursor = Cursors.Arrow; // 空光标/异常尺寸 → 默认箭头
+            }
+        }
+        catch
+        {
+            newCursor = Cursors.Arrow;     // 构建失败绝不影响主流程
+        }
+
+        var old = _remoteCursor;
+        Cursor = newCursor;                // FrameworkElement.Cursor：指针移到本控件上即用此光标
+        _remoteCursor = ReferenceEquals(newCursor, Cursors.Arrow) ? null : newCursor;
+        old?.Dispose();                    // 释放上一个自定义光标句柄（共享的 Cursors.Arrow 不在此列）
+    }
+
+    /// <summary>
+    /// 用 BGRA32（自上而下）像素构造一个 32 位带 Alpha 的 Windows 光标（.cur 内存流）。
+    /// </summary>
+    private static System.Windows.Input.Cursor BuildCursor(byte[] bgra, int w, int h, int hotX, int hotY)
+    {
+        int xorStride = w * 4;                       // 32bpp 每行字节数
+        int xorSize = xorStride * h;
+        int andStride = ((w + 31) / 32) * 4;         // 1bpp AND 掩码每行按 4 字节对齐
+        int andSize = andStride * h;
+        int dibSize = 40 + xorSize + andSize;        // BITMAPINFOHEADER + XOR + AND
+        byte[] cur = new byte[6 + 16 + dibSize];     // ICONDIR + ICONDIRENTRY + DIB
+
+        // ICONDIR
+        WriteU16(cur, 0, 0);                          // 保留
+        WriteU16(cur, 2, 2);                          // type=2(光标)
+        WriteU16(cur, 4, 1);                          // 图像数量
+        // ICONDIRENTRY
+        cur[6] = (byte)(w == 256 ? 0 : w);
+        cur[7] = (byte)(h == 256 ? 0 : h);
+        cur[8] = 0;                                   // 调色板数
+        cur[9] = 0;                                   // 保留
+        WriteU16(cur, 10, (ushort)hotX);             // 光标热点 X（CUR 中此字段即热点）
+        WriteU16(cur, 12, (ushort)hotY);             // 光标热点 Y
+        WriteU32(cur, 14, (uint)dibSize);            // DIB 字节数
+        WriteU32(cur, 18, 22);                        // DIB 偏移 = 6+16
+        // BITMAPINFOHEADER（偏移 22）
+        WriteU32(cur, 22, 40);                        // biSize
+        WriteI32(cur, 26, w);                         // biWidth
+        WriteI32(cur, 30, h * 2);                     // biHeight = 高度×2（含 XOR+AND）
+        WriteU16(cur, 34, 1);                         // biPlanes
+        WriteU16(cur, 36, 32);                        // biBitCount=32
+        // 其余字段（压缩=BI_RGB=0 等）保持 0
+        // XOR 位图：DIB 自下而上，故源行倒序拷贝
+        int xorOff = 22 + 40;
+        for (int row = 0; row < h; row++)
+        {
+            int srcY = h - 1 - row;
+            Array.Copy(bgra, srcY * w * 4, cur, xorOff + row * xorStride, w * 4);
+        }
+        // AND 掩码全 0：32 位光标用 Alpha 通道做透明，AND=0 表示按 XOR/Alpha 显示（数组已零初始化）
+
+        using var ms = new MemoryStream(cur);
+        return new System.Windows.Input.Cursor(ms);
+    }
+
+    private static void WriteU16(byte[] b, int o, ushort v) { b[o] = (byte)v; b[o + 1] = (byte)(v >> 8); }
+    private static void WriteU32(byte[] b, int o, uint v) { b[o] = (byte)v; b[o + 1] = (byte)(v >> 8); b[o + 2] = (byte)(v >> 16); b[o + 3] = (byte)(v >> 24); }
+    private static void WriteI32(byte[] b, int o, int v) => WriteU32(b, o, (uint)v);
 
     #endregion
 

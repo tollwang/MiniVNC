@@ -27,6 +27,35 @@ public sealed class FramebufferUpdateEventArgs : EventArgs
 }
 
 /// <summary>
+/// 光标变化事件参数（来自 Cursor 伪编码 -239）。<see cref="Bgra"/> 为 BGRA32 自上而下像素，
+/// 透明像素 A=0；<see cref="Width"/>×<see cref="Height"/> 为光标尺寸；热点为 (<see cref="HotspotX"/>,<see cref="HotspotY"/>)。
+/// 当 Width/Height 为 0 表示服务器要求隐藏光标（改用默认指针）。
+/// </summary>
+public sealed class CursorUpdateEventArgs : EventArgs
+{
+    /// <summary>BGRA32 像素（自上而下，逐行），透明像素 Alpha=0。</summary>
+    public byte[] Bgra { get; }
+    /// <summary>光标宽度（像素）。</summary>
+    public int Width { get; }
+    /// <summary>光标高度（像素）。</summary>
+    public int Height { get; }
+    /// <summary>热点 X（相对光标左上角）。</summary>
+    public int HotspotX { get; }
+    /// <summary>热点 Y（相对光标左上角）。</summary>
+    public int HotspotY { get; }
+
+    /// <summary>创建光标更新事件参数。</summary>
+    public CursorUpdateEventArgs(byte[] bgra, int width, int height, int hotspotX, int hotspotY)
+    {
+        Bgra = bgra;
+        Width = width;
+        Height = height;
+        HotspotX = hotspotX;
+        HotspotY = hotspotY;
+    }
+}
+
+/// <summary>
 /// VNC客户端主控制器 - 管理连接、认证与消息循环，封装完整的 RFB 协议交互。
 /// </summary>
 public sealed class VncClient : IDisposable
@@ -47,6 +76,9 @@ public sealed class VncClient : IDisposable
 
     /// <summary>服务器剪贴板内容变化时触发。</summary>
     public event EventHandler<string>? ServerClipboardChanged;
+
+    /// <summary>服务器推送光标形状变化时触发（Cursor 伪编码 -239）。</summary>
+    public event EventHandler<CursorUpdateEventArgs>? CursorChanged;
 
     /// <summary>发生错误时触发。</summary>
     public event EventHandler<Exception>? ErrorOccurred;
@@ -263,7 +295,8 @@ public sealed class VncClient : IDisposable
             EncodingTypes.Zrle,
             EncodingTypes.Hextile,
             EncodingTypes.CopyRect,
-            EncodingTypes.Raw
+            EncodingTypes.Raw,
+            EncodingTypes.Cursor   // 伪编码：请求服务器以光标形状推送，由客户端本地渲染
         };
         _protocol.WriteSetEncodings(preferredEncodings);
 
@@ -567,6 +600,13 @@ public sealed class VncClient : IDisposable
             ushort h = await _stream.ReadUInt16Async(ct);
             int encodingType = (int)await _stream.ReadUInt32Async(ct);
 
+            // Cursor 伪编码(-239)：x/y 为热点、w/h 为光标尺寸。不改帧缓冲，单独处理后跳过。
+            if (encodingType == EncodingTypes.Cursor)
+            {
+                await HandleCursorPseudoEncodingAsync(x, y, w, h, ct);
+                continue;
+            }
+
             // CopyRect：内联处理（读取源坐标后在帧缓冲内复制）
             if (encodingType == EncodingTypes.CopyRect)
             {
@@ -594,6 +634,48 @@ public sealed class VncClient : IDisposable
 
         if (updatedRects.Count > 0)
             FramebufferUpdated?.Invoke(this, new FramebufferUpdateEventArgs(updatedRects));
+    }
+
+    /// <summary>
+    /// 处理 Cursor 伪编码(-239)：读取 w×h 像素 + 1bpp 透明掩码，转为 BGRA32 并通过
+    /// <see cref="CursorChanged"/> 上抛由 UI 本地渲染。掩码位=0 的像素置为透明(A=0)。
+    /// </summary>
+    private async Task HandleCursorPseudoEncodingAsync(ushort hotspotX, ushort hotspotY, ushort w, ushort h, CancellationToken ct)
+    {
+        if (_stream == null) return;
+
+        int bpp = PixelFormat.BytesPerPixel;
+        int pixelLen = w * h * bpp;
+        int maskRowBytes = (w + 7) / 8;          // 每行掩码字节数（向上取整到位）
+        int maskLen = maskRowBytes * h;
+
+        byte[] pixelData = pixelLen > 0 ? await _stream.ReadExactlyAsync(pixelLen, ct) : Array.Empty<byte>();
+        byte[] mask = maskLen > 0 ? await _stream.ReadExactlyAsync(maskLen, ct) : Array.Empty<byte>();
+
+        // 空光标：服务器要求隐藏光标 → 通知 UI 回退默认指针
+        if (w == 0 || h == 0)
+        {
+            CursorChanged?.Invoke(this, new CursorUpdateEventArgs(Array.Empty<byte>(), 0, 0, 0, 0));
+            return;
+        }
+
+        byte[] bgra = new byte[w * h * 4];
+        for (int yy = 0; yy < h; yy++)
+        {
+            int maskRow = yy * maskRowBytes;
+            for (int xx = 0; xx < w; xx++)
+            {
+                int di = (yy * w + xx) * 4;
+                uint px = PixelFormat.ReadPixel(pixelData, (yy * w + xx) * bpp);
+                PixelFormat.WriteBgra32(px, bgra, di); // 写入 B,G,R,A=255
+
+                // 掩码：MSB 在前，位=1 表示该像素可见(不透明)
+                bool visible = ((mask[maskRow + (xx >> 3)] >> (7 - (xx & 7))) & 1) != 0;
+                if (!visible) bgra[di + 3] = 0;        // 透明
+            }
+        }
+
+        CursorChanged?.Invoke(this, new CursorUpdateEventArgs(bgra, w, h, hotspotX, hotspotY));
     }
 
     /// <summary>处理服务器剪贴板文本消息。</summary>

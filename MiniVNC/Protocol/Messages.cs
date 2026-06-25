@@ -306,4 +306,11 @@ public static class EncodingTypes
 
     /// <summary>ZRLE编码，使用Zlib压缩的多种子编码类型。</summary>
     public const int Zrle = 16;
+
+    /// <summary>
+    /// 光标伪编码(-239)。服务器借帧缓冲更新矩形推送鼠标光标的形状与热点：
+    /// 矩形的 x/y 为热点坐标，w/h 为光标尺寸；随后是 w×h 像素数据 + 1bpp 透明掩码。
+    /// 不修改帧缓冲，由客户端本地渲染光标——消除光标跟手延迟，并避免与服务器画入的光标重影。
+    /// </summary>
+    public const int Cursor = -239;
 }

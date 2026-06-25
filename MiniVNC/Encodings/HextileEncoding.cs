@@ -4,32 +4,20 @@ using MiniVNC.Protocol;
 namespace MiniVNC.Encodings;
 
 /// <summary>
-/// Hextile编码解码器。编码类型为5。
-/// 
-/// Hextile是Mac屏幕共享默认使用的编码方式。
-/// 它将矩形区域分割为16×16像素的瓦片（tile），每个瓦片独立编码。
-/// 每个瓦片使用子编码标志决定如何压缩，支持以下特性：
-/// 
-/// - 背景色指定：瓦片使用单一背景色填充
-/// - 前景色指定：子矩形使用单一前景色
-/// - 任意子矩形：瓦片包含一个或多个子矩形区域
-/// - 彩色子矩形：每个子矩形有自己的颜色
-/// 
-/// Hextile子编码标志位（按位或组合）：
-/// bit 0: Raw               - 直接传输原始像素
-/// bit 1: BackgroundSpecified - 传输新背景色
-/// bit 2: ForegroundSpecified - 传输新前景色
-/// bit 3: AnySubrects       - 瓦片包含子矩形
-/// bit 4: ColoredSubrects   - 子矩形各自有颜色
+/// Hextile 编码解码器（编码类型5），macOS 屏幕共享常用编码。
+/// 将矩形分割为 16×16 瓦片，每个瓦片按子编码标志独立编码。解码结果直接输出为 BGRA32。
+///
+/// 子编码标志位（按位或组合）：
+/// bit0 Raw、bit1 BackgroundSpecified、bit2 ForegroundSpecified、bit3 AnySubrects、bit4 ColoredSubrects。
+///
+/// 瓦片内字节顺序（非 Raw）：[背景色?][前景色?][子矩形数?][子矩形...]，
+/// 其中前景色（若指定）必须在“子矩形数”之前读取。
 /// </summary>
-public class HextileEncoding : IEncoding
+public sealed class HextileEncoding : IEncoding
 {
-    /// <summary>
-    /// Hextile编码的类型标识符，值为5。
-    /// </summary>
+    /// <summary>Hextile 编码类型标识符。</summary>
     public int EncodingType => EncodingTypes.Hextile;
 
-    // 子编码标志位
     private const byte RawFlag = 0x01;
     private const byte BackgroundSpecifiedFlag = 0x02;
     private const byte ForegroundSpecifiedFlag = 0x04;
@@ -37,143 +25,116 @@ public class HextileEncoding : IEncoding
     private const byte ColoredSubrectsFlag = 0x10;
 
     /// <summary>
-    /// 从网络流中读取Hextile编码数据并解码到帧缓冲区。
+    /// 异步解码 Hextile 编码，返回整个矩形的 BGRA32 数据。
     /// </summary>
-    /// <param name="stream">VNC网络流，用于读取编码数据。</param>
-    /// <param name="rect">描述需要更新的帧缓冲区域的位置和大小。</param>
-    /// <param name="framebuffer">要更新的帧缓冲区实例。</param>
-    public void Decode(VncStream stream, FramebufferRect rect, Framebuffer framebuffer)
+    public async Task<byte[]> DecodeAsync(VncStream stream, FramebufferRect rect, PixelFormat format, CancellationToken ct)
     {
-        int bytesPerPixel = framebuffer.BytesPerPixel;
-        uint backgroundPixel = 0;
-        uint foregroundPixel = 0;
+        int bpp = format.BytesPerPixel;
+        int rw = rect.Width;
+        int rh = rect.Height;
+        byte[] outBgra = new byte[rw * rh * 4];
 
-        // 按16×16瓦片迭代
-        for (int tileY = rect.Y; tileY < rect.Y + rect.Height; tileY += 16)
+        uint background = 0;
+        uint foreground = 0;
+
+        for (int tileY = 0; tileY < rh; tileY += 16)
         {
-            for (int tileX = rect.X; tileX < rect.X + rect.Width; tileX += 16)
+            int tileH = Math.Min(16, rh - tileY);
+            for (int tileX = 0; tileX < rw; tileX += 16)
             {
-                int tileW = Math.Min(16, rect.X + rect.Width - tileX);
-                int tileH = Math.Min(16, rect.Y + rect.Height - tileY);
+                ct.ThrowIfCancellationRequested();
+                int tileW = Math.Min(16, rw - tileX);
 
-                // 读取子编码标志
-                byte subencoding = stream.ReadByte();
+                byte sub = await stream.ReadByteAsync(ct);
 
-                // Raw模式：直接读取原始像素
-                if ((subencoding & RawFlag) != 0)
+                // Raw 瓦片：直接读取原始像素
+                if ((sub & RawFlag) != 0)
                 {
-                    ReadRawTile(stream, framebuffer, tileX, tileY, tileW, tileH);
+                    byte[] raw = await stream.ReadExactlyAsync(tileW * tileH * bpp, ct);
+                    for (int j = 0; j < tileH; j++)
+                    {
+                        for (int k = 0; k < tileW; k++)
+                        {
+                            uint p = format.ReadPixel(raw, (j * tileW + k) * bpp);
+                            format.WriteBgra32(p, outBgra, ((tileY + j) * rw + (tileX + k)) * 4);
+                        }
+                    }
                     continue;
                 }
 
-                // BackgroundSpecified：读取新背景色
-                if ((subencoding & BackgroundSpecifiedFlag) != 0)
+                // 背景色
+                if ((sub & BackgroundSpecifiedFlag) != 0)
+                    background = await ReadPixelAsync(stream, format, ct);
+
+                FillBgra(outBgra, rw, rh, tileX, tileY, tileW, tileH, background, format);
+
+                // 前景色（必须在子矩形数之前读取）
+                if ((sub & ForegroundSpecifiedFlag) != 0)
+                    foreground = await ReadPixelAsync(stream, format, ct);
+
+                // 子矩形
+                if ((sub & AnySubrectsFlag) != 0)
                 {
-                    backgroundPixel = ReadPixelValue(stream, bytesPerPixel);
-                }
+                    byte numSubrects = await stream.ReadByteAsync(ct);
+                    bool colored = (sub & ColoredSubrectsFlag) != 0;
 
-                // 用背景色填充整个瓦片
-                FillRect(framebuffer, tileX, tileY, tileW, tileH, backgroundPixel);
-
-                // AnySubrects：瓦片包含子矩形
-                if ((subencoding & AnySubrectsFlag) != 0)
-                {
-                    byte numSubrects = stream.ReadByte();
-
-                    // 判断子矩形是否有各自的颜色
-                    bool coloredSubrects = (subencoding & ColoredSubrectsFlag) != 0;
-
-                    for (int i = 0; i < numSubrects; i++)
+                    for (int s = 0; s < numSubrects; s++)
                     {
-                        // 如果是彩色子矩形，先读取颜色
-                        if (coloredSubrects)
-                        {
-                            foregroundPixel = ReadPixelValue(stream, bytesPerPixel);
-                        }
-                        else if ((subencoding & ForegroundSpecifiedFlag) != 0 && i == 0)
-                        {
-                            // ForegroundSpecified且第一个子矩形
-                            foregroundPixel = ReadPixelValue(stream, bytesPerPixel);
-                        }
+                        if (colored)
+                            foreground = await ReadPixelAsync(stream, format, ct);
 
-                        // 读取子矩形位置和尺寸（压缩格式）
-                        // 格式：xy(1字节) + wh(1字节)
-                        // x = high nibble * 16, y = low nibble * 16
-                        // w = high nibble + 1, h = low nibble + 1
-                        byte xy = stream.ReadByte();
-                        byte wh = stream.ReadByte();
+                        byte xy = await stream.ReadByteAsync(ct);
+                        byte wh = await stream.ReadByteAsync(ct);
 
-                        int subX = tileX + ((xy >> 4) & 0x0F);
-                        int subY = tileY + (xy & 0x0F);
-                        int subW = ((wh >> 4) & 0x0F) + 1;
-                        int subH = (wh & 0x0F) + 1;
+                        int sx = tileX + ((xy >> 4) & 0x0F);
+                        int sy = tileY + (xy & 0x0F);
+                        int sw = ((wh >> 4) & 0x0F) + 1;
+                        int sh = (wh & 0x0F) + 1;
 
-                        FillRect(framebuffer, subX, subY, subW, subH, foregroundPixel);
+                        FillBgra(outBgra, rw, rh, sx, sy, sw, sh, foreground, format);
                     }
                 }
             }
         }
+
+        return outBgra;
     }
 
     /// <summary>
-    /// 读取Raw模式的瓦片像素数据。
+    /// 从流中异步读取一个服务器像素值。
     /// </summary>
-    private static void ReadRawTile(VncStream stream, Framebuffer framebuffer, int x, int y, int w, int h)
+    private static async Task<uint> ReadPixelAsync(VncStream stream, PixelFormat format, CancellationToken ct)
     {
-        int bytesPerPixel = framebuffer.BytesPerPixel;
-        int dataSize = w * h * bytesPerPixel;
-        byte[] pixelData = stream.ReadExactly(dataSize);
-        framebuffer.UpdateRect(x, y, w, h, pixelData);
+        byte[] bytes = await stream.ReadExactlyAsync(format.BytesPerPixel, ct);
+        return format.ReadPixel(bytes, 0);
     }
 
     /// <summary>
-    /// 从流中读取一个像素值。
+    /// 用单一像素颜色填充 BGRA 输出缓冲中的一个子区域（含边界裁剪）。
     /// </summary>
-    private static uint ReadPixelValue(VncStream stream, int bytesPerPixel)
+    private static void FillBgra(byte[] dst, int rw, int rh, int x, int y, int w, int h, uint serverPixel, PixelFormat format)
     {
-        byte[] bytes = stream.ReadExactly(bytesPerPixel);
+        // 边界裁剪，防止异常子矩形越界
+        if (x < 0) { w += x; x = 0; }
+        if (y < 0) { h += y; y = 0; }
+        if (x + w > rw) w = rw - x;
+        if (y + h > rh) h = rh - y;
+        if (w <= 0 || h <= 0) return;
 
-        return bytesPerPixel switch
+        byte[] one = new byte[4];
+        format.WriteBgra32(serverPixel, one, 0);
+
+        for (int j = 0; j < h; j++)
         {
-            4 => ((uint)bytes[0] << 24) | ((uint)bytes[1] << 16) | ((uint)bytes[2] << 8) | bytes[3],
-            3 => ((uint)bytes[0] << 16) | ((uint)bytes[1] << 8) | bytes[2],
-            2 => (uint)((bytes[0] << 8) | bytes[1]),
-            1 => bytes[0],
-            _ => throw new NotSupportedException($"Unsupported bytes per pixel: {bytesPerPixel}")
-        };
-    }
-
-    /// <summary>
-    /// 用指定像素值填充帧缓冲区中的矩形区域。
-    /// </summary>
-    private static void FillRect(Framebuffer framebuffer, int x, int y, int w, int h, uint pixel)
-    {
-        for (int row = 0; row < h; row++)
-        {
-            for (int col = 0; col < w; col++)
+            int rowOff = ((y + j) * rw + x) * 4;
+            for (int i = 0; i < w; i++)
             {
-                framebuffer.WritePixel(x + col, y + row, pixel);
+                int o = rowOff + i * 4;
+                dst[o] = one[0];
+                dst[o + 1] = one[1];
+                dst[o + 2] = one[2];
+                dst[o + 3] = one[3];
             }
         }
-    }
-
-    /// <summary>
-    /// 异步从网络流中读取Hextile编码数据。
-    /// 使用临时帧缓冲区进行同步解码，然后返回像素数据。
-    /// </summary>
-    /// <param name="stream">VNC网络流，用于读取编码数据。</param>
-    /// <param name="rect">描述需要更新的帧缓冲区域的位置和大小。</param>
-    /// <param name="pixelFormat">当前使用的像素格式。</param>
-    /// <param name="ct">取消令牌。</param>
-    /// <returns>解码后的像素数据字节数组。</returns>
-    public Task<byte[]> DecodeAsync(VncStream stream, FramebufferRect rect, PixelFormat pixelFormat, CancellationToken ct)
-    {
-        return Task.Run(() =>
-        {
-            var tempFramebuffer = new Framebuffer(rect.Width, rect.Height, pixelFormat);
-            var adjustedRect = rect with { X = 0, Y = 0 };
-            Decode(stream, adjustedRect, tempFramebuffer);
-            return tempFramebuffer.Pixels;
-        }, ct);
     }
 }

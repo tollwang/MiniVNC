@@ -1,10 +1,11 @@
 using System;
-using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using MiniVNC.Core;
+using MiniVNC.Encodings;
 using MiniVNC.Input;
 
 namespace MiniVNC.Controls;
@@ -135,16 +136,16 @@ public class VncViewport : Control
     /// </summary>
     public void UpdateFramebuffer()
     {
-        if (_client?.Framebuffer == null || _bitmap == null) return;
+        var framebuffer = _client?.Framebuffer;
+        if (framebuffer == null || _bitmap == null) return;
 
         try
         {
-            var pixels = _client.Framebuffer.ConvertToBgra32();
             _bitmap.Lock();
-
             try
             {
-                Marshal.Copy(pixels, 0, _bitmap.BackBuffer, pixels.Length);
+                // 帧缓冲已是 BGRA32，直接按位图 stride 拷贝到后备缓冲
+                framebuffer.CopyTo(_bitmap.BackBuffer, _bitmap.BackBufferStride);
                 _bitmap.AddDirtyRect(new Int32Rect(
                     0, 0,
                     _bitmap.PixelWidth,

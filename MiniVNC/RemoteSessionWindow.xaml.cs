@@ -121,13 +121,8 @@ public partial class RemoteSessionWindow : Window
             // 启动剪贴板同步定时器
             StartClipboardSync();
 
-            // 请求初始帧缓冲区更新（第一次请求完整更新）
-            _client.RequestFramebufferUpdate(
-                false,
-                0,
-                0,
-                _client.FramebufferWidth,
-                _client.FramebufferHeight);
+            // 注：初始完整更新请求已由 StartUpdateLoop 发起，
+            // 后续增量更新由客户端消息循环自动驱动，此处无需重复请求。
         }
         catch (Exception ex)
         {
@@ -141,18 +136,8 @@ public partial class RemoteSessionWindow : Window
     /// </summary>
     private void OnFramebufferUpdated(object? sender, FramebufferUpdateEventArgs e)
     {
-        Dispatcher.Invoke(() =>
-        {
-            VncViewport.UpdateFramebuffer();
-
-            // 请求下一帧增量更新
-            _client.RequestFramebufferUpdate(
-                true,
-                0,
-                0,
-                _client.FramebufferWidth,
-                _client.FramebufferHeight);
-        });
+        // 重绘画面；增量更新请求由客户端消息循环统一驱动，避免重复请求造成的刷屏循环。
+        Dispatcher.Invoke(VncViewport.UpdateFramebuffer);
     }
 
     /// <summary>
@@ -238,7 +223,7 @@ public partial class RemoteSessionWindow : Window
         if (_client?.IsConnected == true)
         {
             TbResolution.Text = $"{_client.FramebufferWidth}x{_client.FramebufferHeight}";
-            TbEncoding.Text = _client.CurrentEncoding ?? "Raw";
+            TbEncoding.Text = _client.CurrentEncoding;
         }
     }
 
@@ -262,7 +247,7 @@ public partial class RemoteSessionWindow : Window
                 {
                     _isSyncingClipboard = true;
                     _lastClipboardText = text;
-                    _client.SetClientClipboard(text);
+                    _client.SendCutText(text);
                 }
             }
             catch

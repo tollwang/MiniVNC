@@ -102,6 +102,57 @@ public readonly record struct PixelFormat(
             BlueShift: bytes[12]
         );
     }
+
+    /// <summary>
+    /// 每个像素占用的字节数（向上取整）。
+    /// </summary>
+    public int BytesPerPixel => (BitsPerPixel + 7) / 8;
+
+    /// <summary>
+    /// 按本像素格式从字节数组中读取一个像素的原始数值。
+    /// </summary>
+    /// <param name="data">源字节数组。</param>
+    /// <param name="offset">起始偏移。</param>
+    /// <returns>组装后的像素数值（按颜色通道位移/掩码解释）。</returns>
+    public uint ReadPixel(byte[] data, int offset)
+    {
+        return BytesPerPixel switch
+        {
+            4 => BigEndian
+                ? ((uint)data[offset] << 24) | ((uint)data[offset + 1] << 16) | ((uint)data[offset + 2] << 8) | data[offset + 3]
+                : ((uint)data[offset + 3] << 24) | ((uint)data[offset + 2] << 16) | ((uint)data[offset + 1] << 8) | data[offset],
+            3 => BigEndian
+                ? ((uint)data[offset] << 16) | ((uint)data[offset + 1] << 8) | data[offset + 2]
+                : ((uint)data[offset + 2] << 16) | ((uint)data[offset + 1] << 8) | data[offset],
+            2 => BigEndian
+                ? (uint)((data[offset] << 8) | data[offset + 1])
+                : (uint)((data[offset + 1] << 8) | data[offset]),
+            _ => data[offset]
+        };
+    }
+
+    /// <summary>
+    /// 将一个原始像素数值转换为 BGRA32（B,G,R,A=255）并写入目标数组。
+    /// </summary>
+    /// <param name="pixel">原始像素数值。</param>
+    /// <param name="dest">目标字节数组（至少4字节空间）。</param>
+    /// <param name="offset">写入偏移。</param>
+    public void WriteBgra32(uint pixel, byte[] dest, int offset)
+    {
+        byte r = (byte)((pixel >> RedShift) & RedMax);
+        byte g = (byte)((pixel >> GreenShift) & GreenMax);
+        byte b = (byte)((pixel >> BlueShift) & BlueMax);
+
+        // 非8位通道时归一化到0-255
+        if (RedMax != 255 && RedMax != 0) r = (byte)(r * 255 / RedMax);
+        if (GreenMax != 255 && GreenMax != 0) g = (byte)(g * 255 / GreenMax);
+        if (BlueMax != 255 && BlueMax != 0) b = (byte)(b * 255 / BlueMax);
+
+        dest[offset] = b;
+        dest[offset + 1] = g;
+        dest[offset + 2] = r;
+        dest[offset + 3] = 0xFF;
+    }
 }
 
 /// <summary>

@@ -1,3 +1,7 @@
+using System;
+using System.IO;
+using System.Windows;
+
 namespace MiniVNC;
 
 public partial class App : Application

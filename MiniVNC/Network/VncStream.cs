@@ -48,7 +48,7 @@ public class VncStream : IDisposable
     /// <exception cref="OperationCanceledException">操作被取消时抛出。</exception>
     public async Task ConnectAsync(string host, int port, CancellationToken ct = default)
     {
-        await _tcpClient.ConnectAsync(host, port);
+        await _tcpClient.ConnectAsync(host, port, ct);
         _stream = _tcpClient.GetStream();
     }
 
@@ -163,22 +163,6 @@ public class VncStream : IDisposable
             (byte)(value >> 8),
             (byte)value
         });
-    }
-
-    #endregion
-
-    #region 异步连接
-
-    /// <summary>
-    /// 异步连接到VNC服务器。
-    /// 由于构造函数已同步建立连接，此方法仅用于兼容异步调用模式。
-    /// </summary>
-    /// <param name="ct">取消令牌。</param>
-    /// <returns>表示异步操作完成的任务。</returns>
-    public Task ConnectAsync(CancellationToken ct = default)
-    {
-        // 构造函数已建立TCP连接，无需额外操作
-        return Task.CompletedTask;
     }
 
     #endregion

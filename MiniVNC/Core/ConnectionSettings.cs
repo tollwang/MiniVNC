@@ -42,6 +42,12 @@ public sealed class ConnectionSettings
     public string Name { get; set; } = string.Empty;
 
     /// <summary>
+    /// 连接备注说明（可选，显示在连接列表中）。
+    /// </summary>
+    [JsonPropertyName("description")]
+    public string Description { get; set; } = string.Empty;
+
+    /// <summary>
     /// VNC服务器主机名或IP地址。
     /// </summary>
     [JsonPropertyName("host")]
@@ -252,6 +258,7 @@ public sealed class ConnectionSettings
         {
             Id = Guid.NewGuid(),
             Name = this.Name,
+            Description = this.Description,
             Host = this.Host,
             Port = this.Port,
             Password = this.Password,

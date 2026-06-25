@@ -17,43 +17,23 @@
     <AssemblyVersion>1.0.0.0</AssemblyVersion>
     <FileVersion>1.0.0.0</FileVersion>
 
-    <!-- Native AOT 配置 -->
-    <PublishAot>true</PublishAot>
-    <InvariantGlobalization>true</InvariantGlobalization>
-    <Trimming>full</Trimming>
-    <SelfContained>true</SelfContained>
+    <!--
+      发布配置：单文件 + 自包含。
+      注意：WPF 不支持 Native AOT（PublishAot），也不支持完整 Trimming，
+      因此这里使用「单文件自包含」方案：运行时随程序打包，目标机无需预装 .NET。
+    -->
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
-    <DebugType>none</DebugType>
-    <DebugSymbols>false</DebugSymbols>
+    <InvariantGlobalization>true</InvariantGlobalization>
 
-    <!-- WPF AOT兼容性 -->
+    <!-- BitmapUtils 中使用了 unsafe 指针写入 -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <EnableUnsafeBinaryFormatterSerialization>false</EnableUnsafeBinaryFormatterSerialization>
-    <EnableUnsafeUTF7Encoding>false</EnableUnsafeUTF7Encoding>
   </PropertyGroup>
 
-  <ItemGroup>
-    <!-- 确保WPF资源正确包含 -->
-    <ApplicationDefinition Include="App.xaml">
-      <Generator>MSBuild:Compile</Generator>
-      <SubType>Designer</SubType>
-    </ApplicationDefinition>
-    <Page Include="MainWindow.xaml">
-      <Generator>MSBuild:Compile</Generator>
-      <SubType>Designer</SubType>
-    </Page>
-    <Page Include="RemoteSessionWindow.xaml">
-      <Generator>MSBuild:Compile</Generator>
-      <SubType>Designer</SubType>
-    </Page>
-  </ItemGroup>
-
-  <!-- AOT修剪配置 -->
-  <ItemGroup>
-    <TrimmerRootAssembly Include="MiniVNC" />
-  </ItemGroup>
+  <!-- WPF SDK 会自动把 App.xaml 当作 ApplicationDefinition、其余 *.xaml 当作 Page 包含进来，
+       无需手动声明；手动再写一遍会触发 NETSDK1022“重复 Page 项”错误。 -->
 
 </Project>

@@ -8,7 +8,7 @@ MiniVNC 是一款专为 Windows 平台开发的轻量级 VNC 客户端，针对 
 
 | 功能 | 说明 |
 |------|------|
-| 免安装运行 | 单文件 Native AOT 编译，无需 .NET 运行时 |
+| 免安装运行 | 单文件自包含发布，运行时随程序打包，目标机无需预装 .NET |
 | Mac Mini 优化 | 针对 macOS 屏幕共享协议深度适配 |
 | 多连接管理 | 保存多个 Mac Mini 连接配置，快速切换 |
 | 完整远程控制 | 鼠标、键盘全转发，支持滚轮和组合键 |
@@ -112,10 +112,12 @@ MiniVNC 是一款专为 Windows 平台开发的轻量级 VNC 客户端，针对 
 ```bash
 cd MiniVNC
 dotnet publish -c Release -r win-x64 --self-contained \
-  -p:PublishAot=true \
   -p:PublishSingleFile=true \
   -p:EnableCompressionInSingleFile=true
 ```
+
+> 说明：WPF 目前不支持 Native AOT，因此采用「单文件 + 自包含」发布方式。
+> 运行时随程序一起打包，目标机无需预装 .NET 运行时（产物体积相应较大）。
 
 编译完成后，单文件可执行程序位于：
 
@@ -177,9 +179,9 @@ MiniVNC/
 | 开发语言 | C# 11 |
 | UI框架 | WPF (.NET 9) |
 | RFB协议 | 3.3 / 3.7 / 3.8 |
-| 支持编码 | Raw, Hextile, ZRLE, CopyRect |
+| 支持编码 | Raw, Hextile, CopyRect（ZRLE 暂未启用） |
 | 认证方式 | VNC密码认证 (DES Challenge-Response) |
-| 发布模式 | Native AOT / 单文件 / 自包含 |
+| 发布模式 | 单文件 / 自包含 |
 | DPI支持 | Per-Monitor V2 |
 
 ## 常见问题

@@ -234,14 +234,52 @@ public sealed class RfbProtocol : IDisposable
         _stream.WriteUInt16(y);
     }
 
-    /// <summary>发送 ClientCutText 消息（剪贴板文本）。RFB 3.8 规定为 Latin-1(ISO 8859-1)。</summary>
+    /// <summary>
+    /// 发送 ClientCutText 消息（剪贴板文本）。
+    /// 自适应编码：全部字符可用 Latin-1 表示时用 Latin-1（符合 RFB 3.8 规范、兼容性最好）；
+    /// 含中文等非 Latin-1 字符时改用 UTF-8（Latin-1 会把这些字符变成 '?'，UTF-8 严格更好，
+    /// 且现代对端多按 UTF-8 解析）。
+    /// </summary>
     public void WriteCutText(string text)
     {
-        byte[] bytes = Encoding.Latin1.GetBytes(text ?? string.Empty);
+        byte[] bytes = EncodeCutText(text ?? string.Empty);
         _stream.WriteByte((byte)ClientMessageType.ClientCutText);
         _stream.Write(new byte[3]); // 填充
         _stream.WriteUInt32((uint)bytes.Length);
         _stream.Write(bytes);
+    }
+
+    /// <summary>严格 UTF-8（遇非法字节抛异常），用于"先试 UTF-8 再回退 Latin-1"的剪贴板解码。</summary>
+    private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+
+    /// <summary>
+    /// 自适应编码剪贴板文本：可被 Latin-1 完整表示则用 Latin-1，否则用 UTF-8。
+    /// </summary>
+    private static byte[] EncodeCutText(string text)
+    {
+        bool latin1Ok = true;
+        foreach (char c in text)
+        {
+            if (c > 0xFF) { latin1Ok = false; break; }
+        }
+        return latin1Ok ? Encoding.Latin1.GetBytes(text) : Encoding.UTF8.GetBytes(text);
+    }
+
+    /// <summary>
+    /// 自适应解码剪贴板字节：先按严格 UTF-8 解析（中文/Emoji 可正确还原），
+    /// 不是合法 UTF-8 则回退 Latin-1（西欧字符仍可读）。
+    /// </summary>
+    public static string DecodeCutText(byte[] bytes)
+    {
+        if (bytes == null || bytes.Length == 0) return string.Empty;
+        try
+        {
+            return StrictUtf8.GetString(bytes);
+        }
+        catch (DecoderFallbackException)
+        {
+            return Encoding.Latin1.GetString(bytes);
+        }
     }
 
     #endregion

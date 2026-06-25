@@ -709,8 +709,8 @@ public sealed class VncClient : IDisposable
             throw new IOException($"服务器剪贴板长度异常: {textLength}");
 
         byte[] textBytes = textLength == 0 ? Array.Empty<byte>() : await _stream.ReadExactlyAsync((int)textLength, ct);
-        // RFB 3.8 规定 ServerCutText 为 Latin-1(ISO 8859-1)
-        string text = System.Text.Encoding.Latin1.GetString(textBytes);
+        // 自适应解码：先试 UTF-8（中文/Emoji），失败回退 Latin-1（西欧字符）
+        string text = RfbProtocol.DecodeCutText(textBytes);
 
         if (!string.IsNullOrEmpty(text))
             ServerClipboardChanged?.Invoke(this, text);

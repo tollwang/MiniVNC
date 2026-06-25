@@ -183,6 +183,19 @@
                         Background="#3E3E42"
                         Margin="6,0"/>
 
+                <!-- 重连 -->
+                <Button x:Name="BtnReconnect"
+                        Style="{StaticResource ToolButtonStyle}"
+                        Click="BtnReconnect_Click"
+                        ToolTip="重新连接（断线后手动重连）">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="&#xE72C;"
+                                   FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                   Margin="0,0,4,0"/>
+                        <TextBlock Text="重连"/>
+                    </StackPanel>
+                </Button>
+
                 <!-- 断开连接 -->
                 <Button x:Name="BtnDisconnect"
                         Style="{StaticResource DangerButtonStyle}"

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Threading.Tasks;
 using System.Windows;
@@ -9,6 +10,7 @@ using MiniVNC.Controls;
 using MiniVNC.Core;
 using MiniVNC.Input;
 using MiniVNC.Native;
+using MiniVNC.Protocol;
 
 namespace MiniVNC;
 
@@ -48,14 +50,44 @@ public partial class RemoteSessionWindow : Window
     private string _lastClipboardText = string.Empty;
 
     /// <summary>
-    /// 剪贴板同步中标志（防止双向同步死循环）
+    /// 剪贴板同步中标志（防止双向同步死循环）。跨线程读写，标记为 volatile。
     /// </summary>
-    private bool _isSyncingClipboard = false;
+    private volatile bool _isSyncingClipboard = false;
+
+    /// <summary>渲染合并锁。</summary>
+    private readonly object _renderLock = new();
+
+    /// <summary>累积的待渲染矩形（合并多次更新为一次渲染）。</summary>
+    private List<FramebufferRect>? _pendingRects;
+
+    /// <summary>是否已排队一次渲染（确保渲染队列深度恒为1）。</summary>
+    private bool _renderQueued;
+
+    /// <summary>最近一次成功建立连接的时刻（UTC），用于判断"快速掉线"。</summary>
+    private DateTime _lastConnectTime;
+
+    /// <summary>连续"快速掉线"次数，用于阻止自动重连陷入死循环。</summary>
+    private int _quickDropCount = 0;
 
     /// <summary>
     /// 工具栏隐藏延迟计时器
     /// </summary>
     private DispatcherTimer? _toolbarHideTimer;
+
+    /// <summary>剪贴板轮询定时器（需在关闭时停止，避免泄漏）。</summary>
+    private DispatcherTimer? _clipboardTimer;
+
+    /// <summary>用户主动关闭/断开标志。用于区分"用户关闭"与"意外断线"，避免误触发自动重连或关闭后竞态。</summary>
+    private bool _userClosing = false;
+
+    /// <summary>是否正在自动重连。</summary>
+    private bool _reconnecting = false;
+
+    /// <summary>状态/剪贴板定时器是否已启动（确保只启动一次，重连时不重复）。</summary>
+    private bool _timersStarted = false;
+
+    /// <summary>自动重连最大尝试次数。</summary>
+    private const int MaxReconnectAttempts = 5;
 
     /// <summary>
     /// 构造函数
@@ -65,15 +97,8 @@ public partial class RemoteSessionWindow : Window
     {
         InitializeComponent();
         _settings = settings;
-        _client = new VncClient();
-
-        // 绑定事件
-        _client.FramebufferUpdated += OnFramebufferUpdated;
-        _client.StatusChanged += OnStatusChanged;
-        _client.Connected += OnConnected;
-        _client.Disconnected += OnDisconnected;
-        _client.ServerClipboardChanged += OnServerClipboardChanged;
-        _client.ErrorOccurred += OnError;
+        _client = new VncClient { ViewOnly = settings.ViewOnly };
+        BindClientEvents();
 
         // 初始化工具栏隐藏计时器
         _toolbarHideTimer = new DispatcherTimer
@@ -91,6 +116,28 @@ public partial class RemoteSessionWindow : Window
         Activated += (s, e) => VncViewport.Focus();
     }
 
+    /// <summary>绑定 VNC 客户端事件。</summary>
+    private void BindClientEvents()
+    {
+        _client.FramebufferUpdated += OnFramebufferUpdated;
+        _client.StatusChanged += OnStatusChanged;
+        _client.Connected += OnConnected;
+        _client.Disconnected += OnDisconnected;
+        _client.ServerClipboardChanged += OnServerClipboardChanged;
+        _client.ErrorOccurred += OnError;
+    }
+
+    /// <summary>解绑 VNC 客户端事件。</summary>
+    private void UnbindClientEvents()
+    {
+        _client.FramebufferUpdated -= OnFramebufferUpdated;
+        _client.StatusChanged -= OnStatusChanged;
+        _client.Connected -= OnConnected;
+        _client.Disconnected -= OnDisconnected;
+        _client.ServerClipboardChanged -= OnServerClipboardChanged;
+        _client.ErrorOccurred -= OnError;
+    }
+
     /// <summary>
     /// 窗口加载事件 - 建立VNC连接
     /// </summary>
@@ -98,37 +145,67 @@ public partial class RemoteSessionWindow : Window
     {
         try
         {
-            UpdateStatus($"正在连接 {_settings.Host}:{_settings.Port}...");
-
-            await _client.ConnectAsync(_settings.Host, _settings.Port);
-            await _client.AuthenticateAsync(_settings.Username ?? "", _settings.Password ?? "");
-            await _client.InitializeAsync();
-
-            // 设置VncViewport
-            VncViewport.SetClient(_client);
-
-            // 启动更新循环
-            _client.StartUpdateLoop();
-
-            // 启动状态定时器
-            _statusTimer = new DispatcherTimer
-            {
-                Interval = TimeSpan.FromSeconds(1)
-            };
-            _statusTimer.Tick += OnStatusTimerTick;
-            _statusTimer.Start();
-
-            // 启动剪贴板同步定时器
-            StartClipboardSync();
-
-            // 注：初始完整更新请求已由 StartUpdateLoop 发起，
-            // 后续增量更新由客户端消息循环自动驱动，此处无需重复请求。
+            await ConnectSequenceAsync();
+        }
+        catch (OperationCanceledException)
+        {
+            if (_userClosing) return;
+            MessageBox.Show(
+                "连接超时：服务器未在 25 秒内完成握手/初始化。\n\n" +
+                "可重试连接（首次连接偶发卡顿时再连一次通常即可）。\n" +
+                "若 Mac 端设置为“任何人都可请求控制”，请先在 Mac 上点击允许后重试。",
+                "连接超时", MessageBoxButton.OK, MessageBoxImage.Warning);
+            Close();
         }
         catch (Exception ex)
         {
+            if (_userClosing) return;
             MessageBox.Show($"连接失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
             Close();
         }
+    }
+
+    /// <summary>
+    /// 执行一次完整的连接序列（连接→认证→初始化→启动循环）。
+    /// 用于首次连接与自动/手动重连复用。带 25 秒超时；关窗时安全退出。
+    /// </summary>
+    private async Task ConnectSequenceAsync()
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+
+        UpdateStatus($"正在连接 {_settings.Host}:{_settings.Port}...");
+
+        await _client.ConnectAsync(_settings.Host, _settings.Port, cts.Token);
+        await _client.AuthenticateAsync(_settings.Username ?? "", _settings.Password ?? "", cts.Token);
+        _client.PreferredColorDepth = _settings.ColorDepth == 16 ? 16 : 32;
+        _client.ViewOnly = _settings.ViewOnly;
+        await _client.InitializeAsync(cts.Token);
+
+        // 连接过程中窗口已被关闭：安全退出，不再操作已释放的对象
+        if (_userClosing) return;
+
+        VncViewport.SetClient(_client);
+        _client.StartUpdateLoop();
+        _lastConnectTime = DateTime.UtcNow;
+
+        // 初始化完成后尺寸已知，立即更新分辨率显示（避免显示 0x0）
+        TbResolution.Text = $"{_client.FramebufferWidth}x{_client.FramebufferHeight}";
+
+        StartTimersOnce();
+        // 初始完整更新请求已由 StartUpdateLoop 发起，增量更新由消息循环驱动。
+    }
+
+    /// <summary>启动状态/剪贴板定时器（只启动一次，重连时不重复创建）。</summary>
+    private void StartTimersOnce()
+    {
+        if (_timersStarted) return;
+        _timersStarted = true;
+
+        _statusTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _statusTimer.Tick += OnStatusTimerTick;
+        _statusTimer.Start();
+
+        StartClipboardSync();
     }
 
     /// <summary>
@@ -136,8 +213,30 @@ public partial class RemoteSessionWindow : Window
     /// </summary>
     private void OnFramebufferUpdated(object? sender, FramebufferUpdateEventArgs e)
     {
-        // 重绘画面；增量更新请求由客户端消息循环统一驱动，避免重复请求造成的刷屏循环。
-        Dispatcher.Invoke(VncViewport.UpdateFramebuffer);
+        // 合并待渲染矩形并以 BeginInvoke 异步派发（非阻塞后台线程）：
+        // 1) 避免断开时 UI 的 Wait 与后台 Invoke 互等造成卡顿；
+        // 2) 多次更新合并为一次渲染，队列深度恒为1，防止高负载下堆积。
+        lock (_renderLock)
+        {
+            (_pendingRects ??= new List<FramebufferRect>(e.UpdatedRects.Count)).AddRange(e.UpdatedRects);
+            if (_renderQueued) return;
+            _renderQueued = true;
+        }
+        Dispatcher.BeginInvoke(DispatcherPriority.Render, new Action(RenderPending));
+    }
+
+    /// <summary>在 UI 线程上排空并渲染累积的待刷新矩形。</summary>
+    private void RenderPending()
+    {
+        List<FramebufferRect>? rects;
+        lock (_renderLock)
+        {
+            rects = _pendingRects;
+            _pendingRects = null;
+            _renderQueued = false;
+        }
+        if (rects != null && rects.Count > 0)
+            VncViewport.UpdateFramebuffer(rects);
     }
 
     /// <summary>
@@ -145,10 +244,7 @@ public partial class RemoteSessionWindow : Window
     /// </summary>
     private void OnStatusChanged(object? sender, string status)
     {
-        Dispatcher.Invoke(() =>
-        {
-            UpdateStatus(status);
-        });
+        UpdateStatus(status);
     }
 
     /// <summary>
@@ -156,13 +252,13 @@ public partial class RemoteSessionWindow : Window
     /// </summary>
     private void OnConnected(object? sender, EventArgs e)
     {
-        Dispatcher.Invoke(() =>
+        Dispatcher.BeginInvoke(() =>
         {
             UpdateStatus($"已连接到 {_settings.Host}:{_settings.Port}");
             TbConnectionState.Text = "已连接";
             TbConnectionState.Foreground = new System.Windows.Media.SolidColorBrush(
                 System.Windows.Media.Color.FromRgb(0x10, 0x7C, 0x10));
-            TbResolution.Text = $"{_client.FramebufferWidth}x{_client.FramebufferHeight}";
+            // 分辨率在初始化完成后由 ConnectSequenceAsync 设置（此刻尚未取得，避免显示 0x0）
         });
     }
 
@@ -171,13 +267,87 @@ public partial class RemoteSessionWindow : Window
     /// </summary>
     private void OnDisconnected(object? sender, EventArgs e)
     {
-        Dispatcher.Invoke(() =>
+        Dispatcher.BeginInvoke(() =>
         {
-            UpdateStatus("连接已断开");
             TbConnectionState.Text = "已断开";
             TbConnectionState.Foreground = new System.Windows.Media.SolidColorBrush(
                 System.Windows.Media.Color.FromRgb(0xC7, 0x54, 0x50));
+
+            // 意外断线（非用户主动）且开启了自动重连 → 触发重连
+            if (!_userClosing && !_reconnecting && _settings.AutoReconnect)
+            {
+                // 快速掉线保护：若连上后很快又断开，累计计数；连续多次则停止自动重连，
+                // 避免"连上→秒断→重连"无限循环（如某种持续性解码/协议问题）。
+                bool stable = (DateTime.UtcNow - _lastConnectTime).TotalSeconds > 8;
+                if (stable) _quickDropCount = 0; else _quickDropCount++;
+
+                if (_quickDropCount >= 3)
+                {
+                    UpdateStatus("连接反复快速断开，已停止自动重连。请点击工具栏“重连”手动重试，或检查网络/画质设置。");
+                }
+                else
+                {
+                    _ = TryReconnectAsync();
+                }
+            }
+            else
+            {
+                UpdateStatus("连接已断开");
+            }
         });
+    }
+
+    /// <summary>
+    /// 自动重连：重建客户端并按退避间隔重试若干次。期间用户可随时关闭。
+    /// </summary>
+    private async Task TryReconnectAsync()
+    {
+        _reconnecting = true;
+        try
+        {
+            for (int attempt = 1; attempt <= MaxReconnectAttempts; attempt++)
+            {
+                if (_userClosing) return;
+
+                UpdateStatus($"连接已断开，正在自动重连... (第 {attempt}/{MaxReconnectAttempts} 次)");
+                await Task.Delay(2000);
+                if (_userClosing) return;
+
+                RebuildClient();
+
+                try
+                {
+                    await ConnectSequenceAsync();
+                    UpdateStatus("重连成功");
+                    return;
+                }
+                catch (Exception)
+                {
+                    // 本次重连失败，继续下一次尝试
+                }
+            }
+
+            if (!_userClosing)
+                UpdateStatus("自动重连失败，请点击工具栏“重连”手动重试，或检查网络/Mac 端。");
+        }
+        finally
+        {
+            _reconnecting = false;
+        }
+    }
+
+    /// <summary>重建 VNC 客户端（重连前调用）：解绑旧实例、释放、新建并重新绑定。</summary>
+    private void RebuildClient()
+    {
+        UnbindClientEvents();
+        try { _client.Dispose(); } catch { /* 忽略 */ }
+
+        _client = new VncClient
+        {
+            ViewOnly = _settings.ViewOnly,
+            PreferredColorDepth = _settings.ColorDepth == 16 ? 16 : 32
+        };
+        BindClientEvents();
     }
 
     /// <summary>
@@ -187,7 +357,7 @@ public partial class RemoteSessionWindow : Window
     {
         if (!_clipboardSyncEnabled || _isSyncingClipboard) return;
 
-        Dispatcher.Invoke(() =>
+        Dispatcher.BeginInvoke(() =>
         {
             if (!string.IsNullOrEmpty(text) && text != _lastClipboardText)
             {
@@ -209,10 +379,7 @@ public partial class RemoteSessionWindow : Window
     /// </summary>
     private void OnError(object? sender, Exception ex)
     {
-        Dispatcher.Invoke(() =>
-        {
-            UpdateStatus($"错误: {ex.Message}");
-        });
+        UpdateStatus($"错误: {ex.Message}");
     }
 
     /// <summary>
@@ -232,13 +399,13 @@ public partial class RemoteSessionWindow : Window
     /// </summary>
     private void StartClipboardSync()
     {
-        var clipboardTimer = new DispatcherTimer
+        _clipboardTimer = new DispatcherTimer
         {
             Interval = TimeSpan.FromMilliseconds(500)
         };
-        clipboardTimer.Tick += async (s, e) =>
+        _clipboardTimer.Tick += async (s, e) =>
         {
-            if (!_clipboardSyncEnabled || !_client.IsConnected || _isSyncingClipboard) return;
+            if (_userClosing || !_clipboardSyncEnabled || !_client.IsConnected || _isSyncingClipboard) return;
 
             try
             {
@@ -261,7 +428,7 @@ public partial class RemoteSessionWindow : Window
                 _isSyncingClipboard = false;
             }
         };
-        clipboardTimer.Start();
+        _clipboardTimer.Start();
     }
 
     /// <summary>
@@ -269,7 +436,8 @@ public partial class RemoteSessionWindow : Window
     /// </summary>
     private void UpdateStatus(string message)
     {
-        Dispatcher.Invoke(() =>
+        // BeginInvoke：可安全从 UI 线程或后台线程调用，且不阻塞后台线程。
+        Dispatcher.BeginInvoke(() =>
         {
             TbStatusInfo.Text = message;
         });
@@ -515,16 +683,49 @@ public partial class RemoteSessionWindow : Window
     /// </summary>
     private void DisconnectAndClose()
     {
+        _userClosing = true; // 标记为用户主动关闭，阻止自动重连
         try
         {
             _statusTimer?.Stop();
             _toolbarHideTimer?.Stop();
+            _clipboardTimer?.Stop();
             _client.Disconnect();
         }
         catch { /* 忽略断开时的错误 */ }
         finally
         {
             Close();
+        }
+    }
+
+    /// <summary>
+    /// 手动重连按钮：在意外断线/自动重连失败后由用户触发。
+    /// </summary>
+    private async void BtnReconnect_Click(object sender, RoutedEventArgs e)
+    {
+        if (_reconnecting || _userClosing) return;
+        if (_client.IsConnected) return;
+
+        _quickDropCount = 0; // 用户手动重连，重置快速掉线保护
+        _reconnecting = true;
+        try
+        {
+            RebuildClient();
+            await ConnectSequenceAsync();
+            UpdateStatus("重连成功");
+        }
+        catch (OperationCanceledException)
+        {
+            UpdateStatus("重连超时，请重试。");
+        }
+        catch (Exception ex)
+        {
+            UpdateStatus($"重连失败: {ex.Message}");
+        }
+        finally
+        {
+            _reconnecting = false;
+            VncViewport.Focus();
         }
     }
 
@@ -560,13 +761,9 @@ public partial class RemoteSessionWindow : Window
             return;
         }
 
-        // ESC - 如果全屏则退出全屏
-        if (e.Key == Key.Escape && _isFullscreen)
-        {
-            ToggleFullscreen();
-            e.Handled = true;
-            return;
-        }
+        // 注意：不再用 ESC 退出全屏。ESC 在 Mac 上是高频按键（取消、退出、vim 等），
+        // 必须放行给远端，否则全屏时按 ESC 只会退出全屏、永远传不到 Mac。
+        // 退出全屏请用 Ctrl+Alt+F / Ctrl+Alt+W，或把鼠标移到顶部用悬浮工具栏。
     }
 
     /// <summary>
@@ -574,15 +771,13 @@ public partial class RemoteSessionWindow : Window
     /// </summary>
     protected override void OnClosing(CancelEventArgs e)
     {
+        _userClosing = true; // 阻止关闭后的自动重连与连接竞态
         _statusTimer?.Stop();
         _toolbarHideTimer?.Stop();
-        _client.FramebufferUpdated -= OnFramebufferUpdated;
-        _client.StatusChanged -= OnStatusChanged;
-        _client.Connected -= OnConnected;
-        _client.Disconnected -= OnDisconnected;
-        _client.ServerClipboardChanged -= OnServerClipboardChanged;
-        _client.ErrorOccurred -= OnError;
-        _client.Dispose();
+        _clipboardTimer?.Stop();
+
+        UnbindClientEvents();
+        try { _client.Dispose(); } catch { /* 忽略释放时的错误 */ }
 
         base.OnClosing(e);
     }

@@ -80,6 +80,17 @@ public sealed class VncClient : IDisposable
     /// <summary>最近一次使用的编码名称（用于状态栏显示）。</summary>
     public string CurrentEncoding { get; private set; } = "—";
 
+    /// <summary>
+    /// 期望的颜色深度（位/像素）：32=高清全彩；16=流畅（RGB565，带宽减半）。
+    /// 须在 <see cref="InitializeAsync"/> 之前设置。
+    /// </summary>
+    public int PreferredColorDepth { get; set; } = 32;
+
+    /// <summary>
+    /// 仅查看模式。为 true 时不向服务器发送鼠标/键盘/剪贴板输入。
+    /// </summary>
+    public bool ViewOnly { get; set; }
+
     // ---- 私有字段 ----
 
     private VncStream? _stream;
@@ -181,6 +192,8 @@ public sealed class VncClient : IDisposable
         if (securityTypes.Length == 0)
             throw new InvalidOperationException("服务器拒绝连接：未提供安全类型");
 
+        StatusChanged?.Invoke(this, $"服务器支持的安全类型: {string.Join(", ", securityTypes)}");
+
         bool hasUsername = !string.IsNullOrEmpty(username);
         bool hasApple = securityTypes.Contains((byte)30);
         bool hasVnc = securityTypes.Contains((byte)2);
@@ -233,8 +246,10 @@ public sealed class VncClient : IDisposable
         if (FramebufferWidth <= 0 || FramebufferHeight <= 0)
             throw new InvalidOperationException($"服务器返回了非法的帧缓冲尺寸: {FramebufferWidth}x{FramebufferHeight}");
 
-        // 协商目标像素格式：32bpp 大端真彩
-        var preferredFormat = new PixelFormat(32, 24, true, true, 255, 255, 255, 16, 8, 0);
+        // 协商目标像素格式：高清=32bpp 大端真彩；流畅=16bpp RGB565（带宽减半）
+        var preferredFormat = PreferredColorDepth == 16
+            ? new PixelFormat(16, 16, true, true, 31, 63, 31, 11, 5, 0)
+            : new PixelFormat(32, 24, true, true, 255, 255, 255, 16, 8, 0);
         _protocol.WriteSetPixelFormat(preferredFormat);
         PixelFormat = preferredFormat;
 
@@ -275,11 +290,11 @@ public sealed class VncClient : IDisposable
         RequestFramebufferUpdate(false, 0, 0, FramebufferWidth, FramebufferHeight);
     }
 
-    /// <summary>发送鼠标/指针事件。</summary>
+    /// <summary>发送鼠标/指针事件。仅查看模式下不发送。</summary>
     public void SendPointerEvent(int x, int y, int buttonMask)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        if (_protocol == null || !IsConnected) return;
+        if (_disposed) return;
+        if (_protocol == null || !IsConnected || ViewOnly) return;
 
         x = Math.Clamp(x, 0, Math.Max(0, FramebufferWidth - 1));
         y = Math.Clamp(y, 0, Math.Max(0, FramebufferHeight - 1));
@@ -288,22 +303,26 @@ public sealed class VncClient : IDisposable
         catch (Exception ex) { ErrorOccurred?.Invoke(this, ex); }
     }
 
-    /// <summary>发送键盘事件。</summary>
+    /// <summary>发送键盘事件。仅查看模式下不发送。</summary>
     public void SendKeyEvent(uint keysym, bool pressed)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        if (_protocol == null || !IsConnected) return;
+        if (_disposed) return;
+        if (_protocol == null || !IsConnected || ViewOnly) return;
 
         try { lock (_writeLock) { _protocol.WriteKeyEvent(pressed, keysym); } }
         catch (Exception ex) { ErrorOccurred?.Invoke(this, ex); }
     }
 
-    /// <summary>发送剪贴板文本到服务器。</summary>
+    /// <summary>发送剪贴板文本到服务器（限制最大1MB，防止超大剪贴板整包发出）。</summary>
     public void SendCutText(string text)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        ArgumentNullException.ThrowIfNull(text);
-        if (_protocol == null || !IsConnected) return;
+        if (_disposed) return;
+        if (text == null) return;
+        if (_protocol == null || !IsConnected || ViewOnly) return;
+
+        // 防错：限制剪贴板发送大小
+        const int maxLen = 1024 * 1024;
+        if (text.Length > maxLen) text = text.Substring(0, maxLen);
 
         try { lock (_writeLock) { _protocol.WriteCutText(text); } }
         catch (Exception ex) { ErrorOccurred?.Invoke(this, ex); }
@@ -334,6 +353,10 @@ public sealed class VncClient : IDisposable
     {
         if (!IsConnected && _stream == null) return;
 
+        // 先置 false：让消息循环的 finally 跳过 Disconnected 触发，
+        // 避免后台线程在 Dispatcher.Invoke 与本方法的 Wait 之间互等造成卡顿。
+        IsConnected = false;
+
         try { _cts?.Cancel(); }
         catch (ObjectDisposedException) { }
 
@@ -345,7 +368,6 @@ public sealed class VncClient : IDisposable
 
         _stream = null;
         _protocol = null;
-        IsConnected = false;
 
         Disconnected?.Invoke(this, EventArgs.Empty);
         StatusChanged?.Invoke(this, "已断开连接");
@@ -428,6 +450,11 @@ public sealed class VncClient : IDisposable
     {
         if (_protocol == null)
             throw new InvalidOperationException("协议处理器未初始化");
+
+        // 明确提示：macOS 屏幕共享的 Apple 认证需要 Mac 账户用户名，空用户名必然失败
+        if (string.IsNullOrEmpty(username))
+            throw new InvalidOperationException(
+                "此服务器要求 Apple 屏幕共享认证（类型30），需要填写 Mac 账户用户名。请在连接设置中填写用户名后重试。");
 
         StatusChanged?.Invoke(this, "正在进行 Apple 屏幕共享认证...");
 
@@ -580,7 +607,8 @@ public sealed class VncClient : IDisposable
             throw new IOException($"服务器剪贴板长度异常: {textLength}");
 
         byte[] textBytes = textLength == 0 ? Array.Empty<byte>() : await _stream.ReadExactlyAsync((int)textLength, ct);
-        string text = System.Text.Encoding.UTF8.GetString(textBytes);
+        // RFB 3.8 规定 ServerCutText 为 Latin-1(ISO 8859-1)
+        string text = System.Text.Encoding.Latin1.GetString(textBytes);
 
         if (!string.IsNullOrEmpty(text))
             ServerClipboardChanged?.Invoke(this, text);
@@ -603,8 +631,12 @@ public sealed class VncClient : IDisposable
     /// <summary>响铃。</summary>
     private static void HandleBell()
     {
-        try { Console.Beep(); }
-        catch (Exception) { /* 某些环境不可用，忽略 */ }
+        // 异步派发：Console.Beep 在 Windows 会阻塞约 200ms，绝不能卡住消息循环
+        _ = Task.Run(() =>
+        {
+            try { Console.Beep(); }
+            catch (Exception) { /* 某些环境不可用，忽略 */ }
+        });
     }
 
     /// <summary>编码类型 → 名称。</summary>

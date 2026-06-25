@@ -47,7 +47,10 @@ public sealed class ZrleEncoding : IEncoding, IDisposable
         _feed!.Feed(compressed);
 
         int rw = rect.Width, rh = rect.Height;
-        byte[] outBgra = new byte[rw * rh * 4];
+        long outBytes = (long)rw * rh * 4; // long 计算，避免 int 溢出
+        if (outBytes < 0 || outBytes > 256L * 1024 * 1024)
+            throw new InvalidOperationException($"ZRLE 矩形过大: {rw}x{rh}");
+        byte[] outBgra = new byte[(int)outBytes];
         if (rw == 0 || rh == 0) return outBgra;
 
         int cpixelSize = ComputeCPixelSize(format);

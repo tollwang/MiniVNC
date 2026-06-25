@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -7,6 +8,7 @@ using System.Windows.Media.Imaging;
 using MiniVNC.Core;
 using MiniVNC.Encodings;
 using MiniVNC.Input;
+using MiniVNC.Protocol;
 
 namespace MiniVNC.Controls;
 
@@ -34,6 +36,12 @@ public class VncViewport : Control
     /// 当前鼠标按钮掩码
     /// </summary>
     private int _buttonMask;
+
+    /// <summary>
+    /// 已按下的物理键 → 按下时实际发送的 keysym。用于松开时回放同一 keysym，
+    /// 以及焦点丢失/断连时释放全部按下键。
+    /// </summary>
+    private readonly Dictionary<Key, uint> _pressedKeys = new();
 
     #region 依赖属性
 
@@ -117,6 +125,10 @@ public class VncViewport : Control
     {
         _client = client;
 
+        // 重置输入状态，避免上次会话残留的按键/按钮掩码影响新会话
+        _buttonMask = 0;
+        _pressedKeys.Clear();
+
         if (_client?.Framebuffer != null)
         {
             _bitmap = new WriteableBitmap(
@@ -132,7 +144,7 @@ public class VncViewport : Control
     }
 
     /// <summary>
-    /// 更新帧缓冲区位图显示
+    /// 更新整幅帧缓冲区位图显示（全屏刷新）。
     /// </summary>
     public void UpdateFramebuffer()
     {
@@ -144,18 +156,54 @@ public class VncViewport : Control
             _bitmap.Lock();
             try
             {
-                // 帧缓冲已是 BGRA32，直接按位图 stride 拷贝到后备缓冲
                 framebuffer.CopyTo(_bitmap.BackBuffer, _bitmap.BackBufferStride);
-                _bitmap.AddDirtyRect(new Int32Rect(
-                    0, 0,
-                    _bitmap.PixelWidth,
-                    _bitmap.PixelHeight));
+                _bitmap.AddDirtyRect(new Int32Rect(0, 0, _bitmap.PixelWidth, _bitmap.PixelHeight));
             }
             finally
             {
                 _bitmap.Unlock();
             }
+            InvalidateVisual();
+        }
+        catch (Exception)
+        {
+            // 帧缓冲区更新失败时忽略
+        }
+    }
 
+    /// <summary>
+    /// 仅刷新发生变化的矩形区域（增量刷新，避免整屏拷贝，显著提升流畅度）。
+    /// </summary>
+    /// <param name="rects">本次更新的矩形列表（帧缓冲坐标）。</param>
+    public void UpdateFramebuffer(IReadOnlyList<FramebufferRect> rects)
+    {
+        var framebuffer = _client?.Framebuffer;
+        if (framebuffer == null || _bitmap == null) return;
+        if (rects == null || rects.Count == 0) return;
+
+        try
+        {
+            _bitmap.Lock();
+            try
+            {
+                foreach (var r in rects)
+                {
+                    int x = r.X, y = r.Y, w = r.Width, h = r.Height;
+                    // 裁剪到位图范围
+                    if (x < 0) { w += x; x = 0; }
+                    if (y < 0) { h += y; y = 0; }
+                    if (x + w > _bitmap.PixelWidth) w = _bitmap.PixelWidth - x;
+                    if (y + h > _bitmap.PixelHeight) h = _bitmap.PixelHeight - y;
+                    if (w <= 0 || h <= 0) continue;
+
+                    framebuffer.CopyRegionTo(_bitmap.BackBuffer, _bitmap.BackBufferStride, x, y, w, h);
+                    _bitmap.AddDirtyRect(new Int32Rect(x, y, w, h));
+                }
+            }
+            finally
+            {
+                _bitmap.Unlock();
+            }
             InvalidateVisual();
         }
         catch (Exception)
@@ -267,6 +315,7 @@ public class VncViewport : Control
     {
         base.OnMouseDown(e);
         _buttonMask |= MouseHandler.GetButtonMask(e.ChangedButton);
+        CaptureMouse(); // 捕获鼠标：即使指针移出控件也能收到 MouseUp，避免按住状态残留
         OnMouseMove(e);
         Focus();
     }
@@ -279,29 +328,51 @@ public class VncViewport : Control
         base.OnMouseUp(e);
         _buttonMask &= ~MouseHandler.GetButtonMask(e.ChangedButton);
         OnMouseMove(e);
+        if (_buttonMask == 0) ReleaseMouseCapture();
     }
 
     /// <summary>
-    /// 鼠标滚轮事件
+    /// 鼠标捕获丢失（如断连/窗口失活）时清零按钮掩码并通知服务器，避免远端"幽灵按住/拖拽"。
+    /// </summary>
+    protected override void OnLostMouseCapture(MouseEventArgs e)
+    {
+        base.OnLostMouseCapture(e);
+        if (_buttonMask != 0)
+        {
+            _buttonMask = 0;
+            var rect = CalculateRenderRect();
+            var remotePos = MouseHandler.LocalToRemote(
+                _lastMousePos, rect,
+                _client?.FramebufferWidth ?? 1,
+                _client?.FramebufferHeight ?? 1);
+            _client?.SendPointerEvent((int)remotePos.X, (int)remotePos.Y, 0);
+        }
+    }
+
+    /// <summary>
+    /// 鼠标滚轮事件。按档数（每 120 一档）发送对应次数的滚轮点击。
     /// </summary>
     protected override void OnMouseWheel(MouseWheelEventArgs e)
     {
         base.OnMouseWheel(e);
-        if (_client == null) return;
+        if (_client == null || e.Delta == 0) return;
 
-        int mask = _buttonMask;
-        mask |= MouseHandler.GetWheelMask(e.Delta);
+        int wheelBit = e.Delta > 0 ? 8 : 16; // 8=上滚, 16=下滚
+        int notches = Math.Max(1, Math.Abs(e.Delta) / 120);
 
         var pos = e.GetPosition(this);
         var rect = CalculateRenderRect();
-
         var remotePos = MouseHandler.LocalToRemote(
             pos, rect,
             _client.FramebufferWidth,
             _client.FramebufferHeight);
+        int x = (int)remotePos.X, y = (int)remotePos.Y;
 
-        _client.SendPointerEvent((int)remotePos.X, (int)remotePos.Y, mask);
-        _client.SendPointerEvent((int)remotePos.X, (int)remotePos.Y, _buttonMask); // 释放滚轮
+        for (int i = 0; i < notches; i++)
+        {
+            _client.SendPointerEvent(x, y, _buttonMask | wheelBit);
+            _client.SendPointerEvent(x, y, _buttonMask); // 释放滚轮
+        }
     }
 
     #endregion
@@ -309,49 +380,75 @@ public class VncViewport : Control
     #region 键盘事件处理
 
     /// <summary>
-    /// 键盘按下事件 - 转发给VNC服务器
+    /// 解析 WPF 报告的有效按键：Alt 组合时 e.Key 恒为 Key.System（真实键在 e.SystemKey）；
+    /// IME 处理时真实键在 e.ImeProcessedKey。
+    /// </summary>
+    private static Key EffectiveKey(KeyEventArgs e)
+    {
+        if (e.Key == Key.System) return e.SystemKey;
+        if (e.Key == Key.ImeProcessed) return e.ImeProcessedKey;
+        return e.Key;
+    }
+
+    /// <summary>
+    /// 键盘按下事件 - 转发给VNC服务器。
+    /// 记录按下时实际发送的 keysym，松开时回放同一个，避免修饰键先松导致远端按键卡死。
     /// </summary>
     protected override void OnKeyDown(KeyEventArgs e)
     {
         base.OnKeyDown(e);
-
+        e.Handled = true;
         if (_client == null) return;
 
-        uint keysym = KeyboardHandler.KeyToKeysym(e.Key);
+        Key key = EffectiveKey(e);
+        uint keysym = KeyboardHandler.KeyToKeysym(key);
         if (keysym != 0)
         {
+            _pressedKeys[key] = keysym; // 记录该物理键实际发送的 keysym
             _client.SendKeyEvent(keysym, true);
         }
-
-        e.Handled = true;
     }
 
     /// <summary>
-    /// 键盘释放事件 - 转发给VNC服务器
+    /// 键盘释放事件 - 转发给VNC服务器。回放按下时记录的 keysym。
     /// </summary>
     protected override void OnKeyUp(KeyEventArgs e)
     {
         base.OnKeyUp(e);
-
+        e.Handled = true;
         if (_client == null) return;
 
-        uint keysym = KeyboardHandler.KeyToKeysym(e.Key);
+        Key key = EffectiveKey(e);
+        if (_pressedKeys.TryGetValue(key, out uint keysym))
+        {
+            _pressedKeys.Remove(key);
+        }
+        else
+        {
+            keysym = KeyboardHandler.KeyToKeysym(key); // 回退：未记录则按当前键重算
+        }
+
         if (keysym != 0)
         {
             _client.SendKeyEvent(keysym, false);
         }
-
-        e.Handled = true;
     }
 
     /// <summary>
-    /// 释放所有按键（用于焦点丢失时清理）
+    /// 释放所有按下的按键（焦点丢失/断连时清理），避免远端按键卡死、失控重复。
     /// </summary>
     private void ReleaseAllKeys()
     {
-        if (_client == null) return;
+        if (_client == null) { _pressedKeys.Clear(); return; }
 
-        // 释放所有修饰键
+        // 释放所有跟踪到的按下键（含字母/方向/回车等，不只修饰键）
+        foreach (uint keysym in _pressedKeys.Values)
+        {
+            _client.SendKeyEvent(keysym, false);
+        }
+        _pressedKeys.Clear();
+
+        // 防御性再补发常见修饰键的释放
         _client.SendKeyEvent(0xFFE1, false); // Shift
         _client.SendKeyEvent(0xFFE2, false); // Shift_R
         _client.SendKeyEvent(0xFFE3, false); // Ctrl

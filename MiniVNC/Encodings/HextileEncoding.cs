@@ -32,7 +32,10 @@ public sealed class HextileEncoding : IEncoding
         int bpp = format.BytesPerPixel;
         int rw = rect.Width;
         int rh = rect.Height;
-        byte[] outBgra = new byte[rw * rh * 4];
+        long outBytes = (long)rw * rh * 4; // long 计算，避免 int 溢出
+        if (outBytes < 0 || outBytes > 256L * 1024 * 1024)
+            throw new InvalidOperationException($"Hextile 矩形过大: {rw}x{rh}");
+        byte[] outBgra = new byte[(int)outBytes];
 
         uint background = 0;
         uint foreground = 0;
@@ -80,8 +83,9 @@ public sealed class HextileEncoding : IEncoding
 
                     for (int s = 0; s < numSubrects; s++)
                     {
-                        if (colored)
-                            foreground = await ReadPixelAsync(stream, format, ct);
+                        // 彩色子矩形的颜色仅作用于本子矩形，不能写入持久 foreground，
+                        // 否则会污染后续仅含子矩形（非彩色）的瓦片。
+                        uint subColor = colored ? await ReadPixelAsync(stream, format, ct) : foreground;
 
                         byte xy = await stream.ReadByteAsync(ct);
                         byte wh = await stream.ReadByteAsync(ct);
@@ -91,7 +95,7 @@ public sealed class HextileEncoding : IEncoding
                         int sw = ((wh >> 4) & 0x0F) + 1;
                         int sh = (wh & 0x0F) + 1;
 
-                        FillBgra(outBgra, rw, rh, sx, sy, sw, sh, foreground, format);
+                        FillBgra(outBgra, rw, rh, sx, sy, sw, sh, subColor, format);
                     }
                 }
             }

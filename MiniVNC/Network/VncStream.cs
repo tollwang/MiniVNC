@@ -11,7 +11,6 @@ public class VncStream : IDisposable
 {
     private readonly TcpClient _tcpClient;
     private NetworkStream _stream;
-    private readonly byte[] _buffer;
     private bool _disposed;
 
     /// <summary>
@@ -21,7 +20,6 @@ public class VncStream : IDisposable
     public VncStream()
     {
         _tcpClient = new TcpClient();
-        _buffer = new byte[65536];
         _stream = null!;
     }
 
@@ -35,8 +33,8 @@ public class VncStream : IDisposable
     {
         _tcpClient = new TcpClient();
         _tcpClient.Connect(host, port);
+        _tcpClient.NoDelay = true; // 关闭 Nagle：VNC 大量小消息需立即发送
         _stream = _tcpClient.GetStream();
-        _buffer = new byte[65536];
     }
 
     /// <summary>
@@ -50,6 +48,7 @@ public class VncStream : IDisposable
     public async Task ConnectAsync(string host, int port, CancellationToken ct = default)
     {
         await _tcpClient.ConnectAsync(host, port, ct);
+        _tcpClient.NoDelay = true; // 关闭 Nagle：VNC 大量小消息需立即发送，避免首连握手卡顿
         _stream = _tcpClient.GetStream();
     }
 
@@ -183,15 +182,6 @@ public class VncStream : IDisposable
     }
 
     /// <summary>
-    /// 异步将字节数组完整写入流中。
-    /// </summary>
-    /// <param name="data">要写入的字节数据。</param>
-    /// <param name="ct">取消令牌，用于取消异步操作。</param>
-    /// <returns>表示异步操作完成的任务。</returns>
-    public async Task WriteAsync(byte[] data, CancellationToken ct = default)
-        => await _stream.WriteAsync(data.AsMemory(0, data.Length), ct);
-
-    /// <summary>
     /// 异步从流中精确读取指定数量的字节，循环读取直到缓冲区填满。
     /// </summary>
     /// <param name="count">需要读取的精确字节数。</param>
@@ -235,34 +225,6 @@ public class VncStream : IDisposable
         return ((uint)b[0] << 24) | ((uint)b[1] << 16) | ((uint)b[2] << 8) | b[3];
     }
 
-    /// <summary>
-    /// 异步将无符号短整型以2字节大端序格式写入流。
-    /// </summary>
-    /// <param name="value">要写入的 <see cref="ushort"/> 值。</param>
-    /// <param name="ct">取消令牌，用于取消异步操作。</param>
-    /// <returns>表示异步操作完成的任务。</returns>
-    public async Task WriteUInt16Async(ushort value, CancellationToken ct = default)
-    {
-        await WriteAsync(new[] { (byte)(value >> 8), (byte)value }, ct);
-    }
-
-    /// <summary>
-    /// 异步将无符号整型以4字节大端序格式写入流。
-    /// </summary>
-    /// <param name="value">要写入的 <see cref="uint"/> 值。</param>
-    /// <param name="ct">取消令牌，用于取消异步操作。</param>
-    /// <returns>表示异步操作完成的任务。</returns>
-    public async Task WriteUInt32Async(uint value, CancellationToken ct = default)
-    {
-        await WriteAsync(new[]
-        {
-            (byte)(value >> 24),
-            (byte)(value >> 16),
-            (byte)(value >> 8),
-            (byte)value
-        }, ct);
-    }
-
     #endregion
 
     #region IDisposable
@@ -274,8 +236,10 @@ public class VncStream : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
-        _stream.Close();
-        _tcpClient.Close();
+        // _stream 在连接成功前为 null（连接被拒/超时/取消的常见错误路径）；逐个容错关闭，
+        // 避免抛 NullReferenceException 掩盖真实连接错误并泄漏 TcpClient。
+        try { _stream?.Close(); } catch { }
+        try { _tcpClient.Close(); } catch { }
     }
 
     #endregion

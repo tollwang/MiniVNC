@@ -1,8 +1,6 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
-using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -22,39 +20,22 @@ public partial class MainWindow : Window
     private List<ConnectionSettings> _connections = new();
 
     /// <summary>
-    /// 连接配置文件路径
-    /// </summary>
-    private readonly string _configPath;
-
-    /// <summary>
     /// 构造函数
     /// </summary>
     public MainWindow()
     {
         InitializeComponent();
-        _configPath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "MiniVNC",
-            "connections.json");
         LoadConnections();
     }
 
     /// <summary>
-    /// 从配置文件加载连接列表
+    /// 从配置文件加载连接列表（统一走 <see cref="ConnectionSettings.LoadAll"/>，含 DPAPI 解密与损坏回退）。
     /// </summary>
     private void LoadConnections()
     {
         try
         {
-            if (File.Exists(_configPath))
-            {
-                var json = File.ReadAllText(_configPath);
-                var options = new JsonSerializerOptions
-                {
-                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-                };
-                _connections = JsonSerializer.Deserialize<List<ConnectionSettings>>(json, options) ?? new List<ConnectionSettings>();
-            }
+            _connections = ConnectionSettings.LoadAll();
         }
         catch (Exception ex)
         {
@@ -66,25 +47,13 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 保存连接列表到配置文件
+    /// 保存连接列表到配置文件（统一走 <see cref="ConnectionSettings.SaveAll"/>，含 DPAPI 加密）。
     /// </summary>
     private void SaveConnections()
     {
         try
         {
-            var dir = Path.GetDirectoryName(_configPath);
-            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
-            {
-                Directory.CreateDirectory(dir);
-            }
-
-            var options = new JsonSerializerOptions
-            {
-                WriteIndented = true,
-                PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-            };
-            var json = JsonSerializer.Serialize(_connections, options);
-            File.WriteAllText(_configPath, json);
+            ConnectionSettings.SaveAll(_connections);
         }
         catch (Exception ex)
         {
@@ -291,6 +260,9 @@ public class ConnectionDialog : Window
     private TextBox? _tbPort;
     private TextBox? _tbUser;
     private PasswordBox? _pbPassword;
+    private ComboBox? _cbColorDepth;
+    private CheckBox? _cbViewOnly;
+    private CheckBox? _cbAutoReconnect;
 
     /// <summary>
     /// 编辑后的连接设置
@@ -316,10 +288,16 @@ public class ConnectionDialog : Window
         {
             Id = settings.Id,
             Name = settings.Name,
+            Description = settings.Description,
             Host = settings.Host,
             Port = settings.Port,
             Username = settings.Username,
-            Password = settings.Password
+            Password = settings.Password,
+            ColorDepth = settings.ColorDepth,
+            ViewOnly = settings.ViewOnly,
+            AutoReconnect = settings.AutoReconnect,
+            Quality = settings.Quality,
+            CreatedAt = settings.CreatedAt // 编辑保持同一连接，保留创建时间
         };
         InitializeDialog();
     }
@@ -343,9 +321,9 @@ public class ConnectionDialog : Window
         Owner = Application.Current.MainWindow;
 
         var grid = new Grid { Margin = new Thickness(16) };
-        // 5 个输入字段 + 1 个按钮行 = 6 行（均 Auto，高度随内容）。
+        // 6 个输入字段 + 2 个勾选项 + 1 个按钮行 = 9 行（均 Auto，高度随内容）。
         // 不再需要末尾的 Star 填充行——窗口已改为 SizeToContent 自适应高度。
-        for (int i = 0; i < 6; i++)
+        for (int i = 0; i < 9; i++)
         {
             grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         }
@@ -356,6 +334,9 @@ public class ConnectionDialog : Window
         AddTextField(grid, row++, "端口:", ref _tbPort, _settings.Port.ToString());
         AddTextField(grid, row++, "用户名 (Mac 账户, 可选):", ref _tbUser, _settings.Username);
         AddPasswordField(grid, row++, "密码:", ref _pbPassword, _settings.Password ?? "");
+        AddColorDepthField(grid, row++, _settings.ColorDepth);
+        AddCheckBox(grid, row++, "仅查看模式（不发送鼠标/键盘）", ref _cbViewOnly, _settings.ViewOnly);
+        AddCheckBox(grid, row++, "断线后自动重连", ref _cbAutoReconnect, _settings.AutoReconnect);
 
         var btnPanel = new StackPanel
         {
@@ -456,6 +437,52 @@ public class ConnectionDialog : Window
     }
 
     /// <summary>
+    /// 添加画质（颜色深度）下拉字段。
+    /// </summary>
+    private void AddColorDepthField(Grid grid, int row, int colorDepth)
+    {
+        var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 8) };
+        Grid.SetRow(panel, row);
+
+        panel.Children.Add(new TextBlock
+        {
+            Text = "画质:",
+            Foreground = new SolidColorBrush(Color.FromRgb(0x80, 0x80, 0x80)),
+            Margin = new Thickness(0, 0, 0, 4)
+        });
+
+        _cbColorDepth = new ComboBox
+        {
+            Background = new SolidColorBrush(Color.FromRgb(0x2D, 0x2D, 0x30)),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0x3E, 0x3E, 0x42))
+        };
+        _cbColorDepth.Items.Add(new ComboBoxItem { Content = "高清（全彩 32 位）", Tag = 32 });
+        _cbColorDepth.Items.Add(new ComboBoxItem { Content = "流畅（16 位，带宽减半）", Tag = 16 });
+        _cbColorDepth.SelectedIndex = colorDepth == 16 ? 1 : 0;
+
+        panel.Children.Add(_cbColorDepth);
+        grid.Children.Add(panel);
+    }
+
+    /// <summary>
+    /// 添加一个勾选项字段。
+    /// </summary>
+    private void AddCheckBox(Grid grid, int row, string label, ref CheckBox? checkBox, bool value)
+    {
+        checkBox = new CheckBox
+        {
+            Content = label,
+            IsChecked = value,
+            Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            Margin = new Thickness(0, 0, 0, 8),
+            VerticalContentAlignment = VerticalAlignment.Center
+        };
+        Grid.SetRow(checkBox, row);
+        grid.Children.Add(checkBox);
+    }
+
+    /// <summary>
     /// 确定按钮点击
     /// </summary>
     private void OnOkClick(object sender, RoutedEventArgs e)
@@ -476,6 +503,9 @@ public class ConnectionDialog : Window
         _settings.Port = int.TryParse(_tbPort?.Text, out var p) ? p : 5900;
         _settings.Username = _tbUser?.Text?.Trim() ?? "";
         _settings.Password = _pbPassword?.Password;
+        _settings.ColorDepth = (_cbColorDepth?.SelectedItem as ComboBoxItem)?.Tag is int depth ? depth : 32;
+        _settings.ViewOnly = _cbViewOnly?.IsChecked == true;
+        _settings.AutoReconnect = _cbAutoReconnect?.IsChecked == true;
 
         DialogResult = true;
         Close();

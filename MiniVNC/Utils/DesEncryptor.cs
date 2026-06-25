@@ -64,7 +64,8 @@ public static class DesEncryptor
 
         if (!string.IsNullOrEmpty(password))
         {
-            byte[] passwordBytes = System.Text.Encoding.ASCII.GetBytes(password);
+            // 用 Latin-1（每字符=其字节值），与常见 VNC 服务器一致；ASCII 会把非 ASCII 字符替为 '?'
+            byte[] passwordBytes = System.Text.Encoding.Latin1.GetBytes(password);
             int len = Math.Min(passwordBytes.Length, 8);
             Buffer.BlockCopy(passwordBytes, 0, key, 0, len);
         }

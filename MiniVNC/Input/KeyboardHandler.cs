@@ -68,7 +68,6 @@ public static class KeyboardHandler
             Key.RightCtrl => 0xFFE4,
             Key.LeftAlt => 0xFFE9,
             Key.RightAlt => 0xFFEA,
-            Key.System => 0xFFEB,
             Key.LWin => 0xFFEB,  // Windows/Command键映射
             Key.RWin => 0xFFEC,
 

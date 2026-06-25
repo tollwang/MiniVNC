@@ -110,9 +110,13 @@ public sealed class RfbProtocol : IDisposable
             uint length = await _stream.ReadUInt32Async(ct);
             return await ReadStringAsync(length, ct);
         }
+        catch (OperationCanceledException)
+        {
+            throw; // 取消必须向上传播，不能吞成 null
+        }
         catch
         {
-            return null;
+            return null; // 服务器未发送原因串/读取失败：返回 null 由调用方给出通用提示
         }
     }
 
@@ -127,8 +131,11 @@ public sealed class RfbProtocol : IDisposable
     {
         ushort generator = await _stream.ReadUInt16Async(ct);
         ushort keyLength = await _stream.ReadUInt16Async(ct);
-        if (keyLength == 0 || keyLength > 8192)
-            throw new IOException($"ARD 认证密钥长度异常: {keyLength}");
+        // macOS 屏幕共享实际使用 512 位(64 字节)DH 群，下限必须能接受 64 字节，
+        // 否则会把真实的 Mac 服务器误判为“过弱”而拒绝，导致根本连不上（首要连接阻断点）。
+        // 上限防止异常/恶意服务器用超大模数让 ModPow 极慢造成卡死；LAN 自用下 512 位安全性可接受。
+        if (keyLength < 32 || keyLength > 1024)
+            throw new IOException($"ARD 认证密钥长度异常: {keyLength} 字节");
 
         byte[] prime = await _stream.ReadExactlyAsync(keyLength, ct);
         byte[] serverPublicKey = await _stream.ReadExactlyAsync(keyLength, ct);
@@ -227,10 +234,10 @@ public sealed class RfbProtocol : IDisposable
         _stream.WriteUInt16(y);
     }
 
-    /// <summary>发送 ClientCutText 消息（剪贴板文本）。</summary>
+    /// <summary>发送 ClientCutText 消息（剪贴板文本）。RFB 3.8 规定为 Latin-1(ISO 8859-1)。</summary>
     public void WriteCutText(string text)
     {
-        byte[] bytes = Encoding.UTF8.GetBytes(text ?? string.Empty);
+        byte[] bytes = Encoding.Latin1.GetBytes(text ?? string.Empty);
         _stream.WriteByte((byte)ClientMessageType.ClientCutText);
         _stream.Write(new byte[3]); // 填充
         _stream.WriteUInt32((uint)bytes.Length);

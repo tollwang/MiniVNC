@@ -11,9 +11,12 @@
     <AssemblyName>MiniVNC</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyTitle>MiniVNC</AssemblyTitle>
-    <AssemblyDescription>轻量级VNC远程控制工具 - 专为Mac Mini优化</AssemblyDescription>
-    <AssemblyCompany>MiniVNC</AssemblyCompany>
-    <AssemblyProduct>MiniVNC</AssemblyProduct>
+    <!-- SDK 识别的属性是 Description（旧的 AssemblyDescription 会被忽略，导致 exe 文件说明为空） -->
+    <Description>轻量级VNC远程控制工具 - 专为Mac Mini优化</Description>
+    <Company>MiniVNC</Company>
+    <Product>MiniVNC</Product>
+    <Authors>MiniVNC</Authors>
+    <Copyright>Copyright © MiniVNC</Copyright>
     <AssemblyVersion>1.0.0.0</AssemblyVersion>
     <FileVersion>1.0.0.0</FileVersion>
 

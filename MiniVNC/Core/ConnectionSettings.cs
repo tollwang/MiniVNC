@@ -101,6 +101,12 @@ public sealed class ConnectionSettings
     public int Quality { get; set; } = 6;
 
     /// <summary>
+    /// 颜色深度（位/像素）：32=高清全彩；16=流畅模式（RGB565，带宽减半）。默认32。
+    /// </summary>
+    [JsonPropertyName("colorDepth")]
+    public int ColorDepth { get; set; } = 32;
+
+    /// <summary>
     /// 连接断开时是否自动重新连接。
     /// </summary>
     [JsonPropertyName("autoReconnect")]
@@ -119,11 +125,11 @@ public sealed class ConnectionSettings
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 
     /// <summary>
-    /// 使用DPAPI加密密码。
+    /// 使用DPAPI加密密码。加密失败时返回 null（绝不回退写入明文密码到磁盘）。
     /// </summary>
     /// <param name="password">明文密码</param>
-    /// <returns>Base64编码的加密密码</returns>
-    private static string EncryptPassword(string password)
+    /// <returns>Base64编码的加密密码；失败返回 null</returns>
+    private static string? EncryptPassword(string password)
     {
         try
         {
@@ -131,14 +137,19 @@ public sealed class ConnectionSettings
             byte[] encrypted = ProtectedData.Protect(data, null, DataProtectionScope.CurrentUser);
             return Convert.ToBase64String(encrypted);
         }
-        catch { return password; }
+        catch
+        {
+            // 不把明文写盘；宁可不持久化密码（用户下次重新输入）
+            return null;
+        }
     }
 
     /// <summary>
-    /// 使用DPAPI解密密码。
+    /// 使用DPAPI解密密码。解密失败时返回空字符串（绝不返回密文本身——
+    /// 否则会被当作明文在下次保存时重新加密，不可逆地损坏原密码）。
     /// </summary>
     /// <param name="encrypted">Base64编码的加密密码</param>
-    /// <returns>明文密码</returns>
+    /// <returns>明文密码；失败返回空字符串</returns>
     private static string DecryptPassword(string encrypted)
     {
         try
@@ -147,7 +158,12 @@ public sealed class ConnectionSettings
             byte[] decrypted = ProtectedData.Unprotect(data, null, DataProtectionScope.CurrentUser);
             return Encoding.UTF8.GetString(decrypted);
         }
-        catch { return encrypted; }
+        catch
+        {
+            // 本机/本用户无法解密（如跨机/跨用户拷贝的配置）：返回空，提示用户重新输入，
+            // 而非把密文当明文回写造成永久损坏。
+            return string.Empty;
+        }
     }
 
     /// <summary>
@@ -169,7 +185,12 @@ public sealed class ConnectionSettings
         }
         catch (JsonException)
         {
-            // 配置文件损坏，返回空列表
+            // 配置文件损坏：先把损坏文件备份为 .bad，避免下次保存静默覆盖、永久丢失全部连接。
+            try
+            {
+                File.Copy(ConfigPath, ConfigPath + ".bad", overwrite: true);
+            }
+            catch { /* 备份失败也不要因此崩溃 */ }
             return new List<ConnectionSettings>();
         }
     }
@@ -198,7 +219,19 @@ public sealed class ConnectionSettings
         }
 
         string json = JsonSerializer.Serialize(settings, JsonOptions);
-        File.WriteAllText(ConfigPath, json);
+
+        // 原子写：先写临时文件再替换，避免崩溃/断电中途留下半截文件导致下次加载判损坏并清空。
+        string tempPath = ConfigPath + ".tmp";
+        File.WriteAllText(tempPath, json);
+        if (File.Exists(ConfigPath))
+        {
+            // File.Replace 原子替换，并把原文件留存为 .bak 兜底
+            File.Replace(tempPath, ConfigPath, ConfigPath + ".bak");
+        }
+        else
+        {
+            File.Move(tempPath, ConfigPath);
+        }
     }
 
     /// <summary>
@@ -272,6 +305,7 @@ public sealed class ConnectionSettings
             Password = this.Password,
             ViewOnly = this.ViewOnly,
             Quality = this.Quality,
+            ColorDepth = this.ColorDepth,
             AutoReconnect = this.AutoReconnect
         };
     }

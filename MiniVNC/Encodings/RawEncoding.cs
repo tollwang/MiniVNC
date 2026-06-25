@@ -17,18 +17,19 @@ public sealed class RawEncoding : IEncoding
     public async Task<byte[]> DecodeAsync(VncStream stream, FramebufferRect rect, PixelFormat format, CancellationToken ct)
     {
         int bpp = format.BytesPerPixel;
-        int count = rect.Width * rect.Height;
-        long dataSize = (long)count * bpp;
+        long count = (long)rect.Width * rect.Height; // 用 long，避免 ushort*ushort 溢出 int
+        long dataSize = count * bpp;
 
-        // 限制单次读取，防止异常/恶意数据导致超大分配
-        if (dataSize < 0 || dataSize > 64L * 1024 * 1024)
+        // 限制单次读取，防止异常/恶意数据导致超大分配/溢出
+        if (dataSize < 0 || dataSize > 256L * 1024 * 1024)
             throw new InvalidOperationException($"Raw 编码数据大小非法: {dataSize} 字节");
 
-        byte[] bgra = new byte[count * 4];
-        if (count == 0) return bgra;
+        int n = (int)count; // 经上限校验后必定在 int 范围内
+        byte[] bgra = new byte[n * 4];
+        if (n == 0) return bgra;
 
         byte[] src = await stream.ReadExactlyAsync((int)dataSize, ct);
-        for (int i = 0; i < count; i++)
+        for (int i = 0; i < n; i++)
         {
             uint pixel = format.ReadPixel(src, i * bpp);
             format.WriteBgra32(pixel, bgra, i * 4);

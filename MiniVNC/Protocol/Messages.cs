@@ -143,10 +143,10 @@ public readonly record struct PixelFormat(
         byte g = (byte)((pixel >> GreenShift) & GreenMax);
         byte b = (byte)((pixel >> BlueShift) & BlueMax);
 
-        // 非8位通道时归一化到0-255
-        if (RedMax != 255 && RedMax != 0) r = (byte)(r * 255 / RedMax);
-        if (GreenMax != 255 && GreenMax != 0) g = (byte)(g * 255 / GreenMax);
-        if (BlueMax != 255 && BlueMax != 0) b = (byte)(b * 255 / BlueMax);
+        // 非8位通道时归一化到0-255（四舍五入，避免 16bpp 等色彩系统性偏低）
+        if (RedMax != 255 && RedMax != 0) r = (byte)((r * 255 + RedMax / 2) / RedMax);
+        if (GreenMax != 255 && GreenMax != 0) g = (byte)((g * 255 + GreenMax / 2) / GreenMax);
+        if (BlueMax != 255 && BlueMax != 0) b = (byte)((b * 255 + BlueMax / 2) / BlueMax);
 
         dest[offset] = b;
         dest[offset + 1] = g;

@@ -27,14 +27,21 @@ public sealed class Framebuffer
     /// <param name="width">宽度（像素），必须大于0。</param>
     /// <param name="height">高度（像素），必须大于0。</param>
     /// <exception cref="ArgumentOutOfRangeException">尺寸非正时抛出。</exception>
+    /// <summary>帧缓冲尺寸上限（像素），防止恶意/异常服务器上报超大尺寸导致溢出或 OOM。</summary>
+    private const int MaxDimension = 16384;
+
     public Framebuffer(int width, int height)
     {
-        if (width <= 0) throw new ArgumentOutOfRangeException(nameof(width));
-        if (height <= 0) throw new ArgumentOutOfRangeException(nameof(height));
+        if (width <= 0 || width > MaxDimension)
+            throw new ArgumentOutOfRangeException(nameof(width), $"帧缓冲宽度非法: {width}");
+        if (height <= 0 || height > MaxDimension)
+            throw new ArgumentOutOfRangeException(nameof(height), $"帧缓冲高度非法: {height}");
 
         Width = width;
         Height = height;
-        _pixels = new byte[width * height * BytesPerPixel];
+        // 用 long 计算并裁回 int，避免 32 位乘法回绕（已由上限保证不超过 int 范围）
+        long bytes = (long)width * height * BytesPerPixel;
+        _pixels = new byte[bytes];
     }
 
     /// <summary>
@@ -125,6 +132,39 @@ public sealed class Framebuffer
                 {
                     Marshal.Copy(_pixels, row * srcStride, dest + row * destStride, srcStride);
                 }
+            }
+        }
+    }
+
+    /// <summary>
+    /// 仅将指定矩形区域拷贝到非托管内存（用于增量刷新，避免整屏拷贝）。
+    /// 坐标会被裁剪到帧缓冲范围内。
+    /// </summary>
+    /// <param name="dest">目标非托管内存指针（整幅位图的后备缓冲）。</param>
+    /// <param name="destStride">目标每行字节数。</param>
+    /// <param name="x">区域左上角X。</param>
+    /// <param name="y">区域左上角Y。</param>
+    /// <param name="w">区域宽度。</param>
+    /// <param name="h">区域高度。</param>
+    public void CopyRegionTo(IntPtr dest, int destStride, int x, int y, int w, int h)
+    {
+        // 裁剪到边界
+        if (x < 0) { w += x; x = 0; }
+        if (y < 0) { h += y; y = 0; }
+        if (x + w > Width) w = Width - x;
+        if (y + h > Height) h = Height - y;
+        if (w <= 0 || h <= 0) return;
+
+        int srcStride = Width * BytesPerPixel;
+        int rowBytes = w * BytesPerPixel;
+
+        lock (_sync)
+        {
+            for (int row = 0; row < h; row++)
+            {
+                int srcOffset = ((y + row) * Width + x) * BytesPerPixel;
+                IntPtr destPtr = dest + (y + row) * destStride + x * BytesPerPixel;
+                Marshal.Copy(_pixels, srcOffset, destPtr, rowBytes);
             }
         }
     }

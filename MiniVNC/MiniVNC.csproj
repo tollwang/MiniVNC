@@ -27,7 +27,12 @@
     <PublishSingleFile>true</PublishSingleFile>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
-    <InvariantGlobalization>true</InvariantGlobalization>
+    <!--
+      必须为 false。WPF 需要真实的区域文化支持（渲染中文、FormattedText 使用 CurrentCulture 等）；
+      若开启 InvariantGlobalization，在中文等非英文 Windows 上会抛
+      “Only the invariant culture is supported / 2052 (0x0804) is an invalid culture identifier”。
+    -->
+    <InvariantGlobalization>false</InvariantGlobalization>
 
     <!-- BitmapUtils 中使用了 unsafe 指针写入 -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>

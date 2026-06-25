@@ -222,7 +222,9 @@ public partial class MainWindow : Window
         {
             Name = $"{host}:{port}",
             Host = host,
-            Port = port
+            Port = port,
+            Username = TbQuickUser.Text.Trim(),
+            Password = PbQuickPassword.Password
         };
 
         StartSession(settings);
@@ -287,6 +289,7 @@ public class ConnectionDialog : Window
     private TextBox? _tbName;
     private TextBox? _tbHost;
     private TextBox? _tbPort;
+    private TextBox? _tbUser;
     private PasswordBox? _pbPassword;
 
     /// <summary>
@@ -315,6 +318,7 @@ public class ConnectionDialog : Window
             Name = settings.Name,
             Host = settings.Host,
             Port = settings.Port,
+            Username = settings.Username,
             Password = settings.Password
         };
         InitializeDialog();
@@ -327,7 +331,9 @@ public class ConnectionDialog : Window
     {
         Title = "连接设置";
         Width = 400;
-        Height = 280;
+        // 高度自适应内容：原来写死 Height=340 在加上标题栏后会把底部「确定/取消」按钮裁掉，
+        // 且 ResizeMode=NoResize 导致用户无法拉大窗口看到按钮。改用 SizeToContent 永远完整显示。
+        SizeToContent = SizeToContent.Height;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background = new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E));
         Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC));
@@ -337,16 +343,18 @@ public class ConnectionDialog : Window
         Owner = Application.Current.MainWindow;
 
         var grid = new Grid { Margin = new Thickness(16) };
-        for (int i = 0; i < 5; i++)
+        // 5 个输入字段 + 1 个按钮行 = 6 行（均 Auto，高度随内容）。
+        // 不再需要末尾的 Star 填充行——窗口已改为 SizeToContent 自适应高度。
+        for (int i = 0; i < 6; i++)
         {
             grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         }
-        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
         int row = 0;
         AddTextField(grid, row++, "名称:", ref _tbName, _settings.Name);
         AddTextField(grid, row++, "主机:", ref _tbHost, _settings.Host);
         AddTextField(grid, row++, "端口:", ref _tbPort, _settings.Port.ToString());
+        AddTextField(grid, row++, "用户名 (Mac 账户, 可选):", ref _tbUser, _settings.Username);
         AddPasswordField(grid, row++, "密码:", ref _pbPassword, _settings.Password ?? "");
 
         var btnPanel = new StackPanel
@@ -365,7 +373,8 @@ public class ConnectionDialog : Window
             Margin = new Thickness(0, 0, 8, 0),
             Background = new SolidColorBrush(Color.FromRgb(0x00, 0x78, 0xD4)),
             Foreground = new SolidColorBrush(Colors.White),
-            BorderThickness = new Thickness(0)
+            BorderThickness = new Thickness(0),
+            IsDefault = true   // 按 Enter 即确定
         };
         btnOk.Click += OnOkClick;
 
@@ -376,7 +385,8 @@ public class ConnectionDialog : Window
             Height = 28,
             Background = new SolidColorBrush(Color.FromRgb(0x3E, 0x3E, 0x42)),
             Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
-            BorderThickness = new Thickness(0)
+            BorderThickness = new Thickness(0),
+            IsCancel = true   // 按 Esc 即取消
         };
         btnCancel.Click += OnCancelClick;
 
@@ -464,6 +474,7 @@ public class ConnectionDialog : Window
         _settings.Name = _tbName?.Text?.Trim() ?? "";
         _settings.Host = _tbHost?.Text?.Trim() ?? "";
         _settings.Port = int.TryParse(_tbPort?.Text, out var p) ? p : 5900;
+        _settings.Username = _tbUser?.Text?.Trim() ?? "";
         _settings.Password = _pbPassword?.Password;
 
         DialogResult = true;

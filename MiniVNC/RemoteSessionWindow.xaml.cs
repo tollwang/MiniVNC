@@ -101,7 +101,7 @@ public partial class RemoteSessionWindow : Window
             UpdateStatus($"正在连接 {_settings.Host}:{_settings.Port}...");
 
             await _client.ConnectAsync(_settings.Host, _settings.Port);
-            await _client.AuthenticateAsync(_settings.Password ?? "");
+            await _client.AuthenticateAsync(_settings.Username ?? "", _settings.Password ?? "");
             await _client.InitializeAsync();
 
             // 设置VncViewport

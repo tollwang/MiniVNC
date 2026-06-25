@@ -105,7 +105,8 @@ public sealed class VncClient : IDisposable
         _encodings = new Dictionary<int, IEncoding>
         {
             [EncodingTypes.Raw] = new RawEncoding(),
-            [EncodingTypes.Hextile] = new HextileEncoding()
+            [EncodingTypes.Hextile] = new HextileEncoding(),
+            [EncodingTypes.Zrle] = new ZrleEncoding()
         };
 
         // 默认目标像素格式：32bpp 大端真彩，R/G/B 位移 16/8/0（与 BGRA 渲染兼容）
@@ -160,8 +161,14 @@ public sealed class VncClient : IDisposable
         }
     }
 
-    /// <summary>执行 VNC 认证。</summary>
-    public async Task AuthenticateAsync(string password, CancellationToken ct = default)
+    /// <summary>
+    /// 执行认证。支持 macOS 屏幕共享默认的 Apple/ARD 认证（类型30，需用户名+密码）、
+    /// 标准 VNC 密码认证（类型2，仅密码）与无认证（类型1）。
+    /// </summary>
+    /// <param name="username">账户用户名（ARD 认证需要；VNC 密码认证可留空）。</param>
+    /// <param name="password">连接密码。</param>
+    /// <param name="ct">取消令牌。</param>
+    public async Task AuthenticateAsync(string username, string password, CancellationToken ct = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
@@ -174,23 +181,36 @@ public sealed class VncClient : IDisposable
         if (securityTypes.Length == 0)
             throw new InvalidOperationException("服务器拒绝连接：未提供安全类型");
 
-        if (securityTypes.Contains((byte)2)) // VNC 认证
+        bool hasUsername = !string.IsNullOrEmpty(username);
+        bool hasApple = securityTypes.Contains((byte)30);
+        bool hasVnc = securityTypes.Contains((byte)2);
+        bool hasNone = securityTypes.Contains((byte)1);
+
+        // 优先级：提供了用户名且支持 ARD → ARD；否则标准 VNC；否则 ARD；否则无认证。
+        if (hasApple && (hasUsername || !hasVnc))
+        {
+            await PerformAppleAuthenticationAsync(username, password, ct);
+        }
+        else if (hasVnc)
         {
             await PerformVncAuthenticationAsync(password, ct);
         }
-        else if (securityTypes.Contains((byte)1)) // 无认证
+        else if (hasNone)
         {
             await PerformNoneAuthenticationAsync(ct);
         }
         else
         {
             throw new NotSupportedException(
-                $"服务器不支持任何已知的安全类型。提供的类型: {string.Join(", ", securityTypes)}。" +
-                "若目标为 macOS 屏幕共享，请在 Mac 上启用“VNC 显示器可使用密码控制屏幕”。");
+                $"服务器不支持任何已知的安全类型。提供的类型: {string.Join(", ", securityTypes)}。");
         }
 
         StatusChanged?.Invoke(this, "认证成功");
     }
+
+    /// <summary>向后兼容的仅密码认证重载（用户名留空）。</summary>
+    public Task AuthenticateAsync(string password, CancellationToken ct = default)
+        => AuthenticateAsync(string.Empty, password, ct);
 
     /// <summary>初始化会话：发送客户端初始化并接收服务器初始化信息。</summary>
     public async Task InitializeAsync(CancellationToken ct = default)
@@ -221,8 +241,15 @@ public sealed class VncClient : IDisposable
         // 创建 BGRA32 帧缓冲
         Framebuffer = new Framebuffer(FramebufferWidth, FramebufferHeight);
 
-        // 协商编码优先级：Hextile > CopyRect > Raw（ZRLE 暂未启用）
-        int[] preferredEncodings = new[] { EncodingTypes.Hextile, EncodingTypes.CopyRect, EncodingTypes.Raw };
+        // 协商编码优先级：ZRLE > Hextile > CopyRect > Raw
+        // 若 ZRLE 在实测中出现问题，将 ZRLE 从列表移到末尾或移除即可回退到 Hextile。
+        int[] preferredEncodings = new[]
+        {
+            EncodingTypes.Zrle,
+            EncodingTypes.Hextile,
+            EncodingTypes.CopyRect,
+            EncodingTypes.Raw
+        };
         _protocol.WriteSetEncodings(preferredEncodings);
 
         StatusChanged?.Invoke(this, $"会话已初始化: {FramebufferWidth}x{FramebufferHeight} - {ServerName}");
@@ -394,6 +421,30 @@ public sealed class VncClient : IDisposable
         }
 
         StatusChanged?.Invoke(this, "警告: 使用无认证模式连接（不安全）");
+    }
+
+    /// <summary>Apple/ARD 认证（安全类型30，macOS 屏幕共享默认）。</summary>
+    private async Task PerformAppleAuthenticationAsync(string username, string password, CancellationToken ct)
+    {
+        if (_protocol == null)
+            throw new InvalidOperationException("协议处理器未初始化");
+
+        StatusChanged?.Invoke(this, "正在进行 Apple 屏幕共享认证...");
+
+        _protocol.WriteSecurityType(30);
+
+        var (generator, prime, serverPublicKey) = await _protocol.ReadAppleDhParamsAsync(ct);
+        var (cipher, clientPublicKey) = AppleAuthenticator.CreateResponse(
+            generator, prime, serverPublicKey, username, password);
+        _protocol.WriteAppleDhResponse(cipher, clientPublicKey);
+
+        uint result = await _protocol.ReadSecurityResultAsync(ct);
+        if (result != 0)
+        {
+            string? errorMsg = await _protocol.ReadSecurityResultErrorAsync(ct);
+            throw new InvalidOperationException(
+                $"Apple 认证失败: {errorMsg ?? "用户名或密码错误"} (错误码: {result})");
+        }
     }
 
     /// <summary>服务器消息接收循环（后台线程）。</summary>

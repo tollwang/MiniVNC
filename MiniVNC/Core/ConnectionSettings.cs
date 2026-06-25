@@ -61,6 +61,12 @@ public sealed class ConnectionSettings
     public int Port { get; set; } = 5900;
 
     /// <summary>
+    /// 账户用户名。macOS 屏幕共享的 Apple/ARD 认证（安全类型30）需要；标准 VNC 密码认证可留空。
+    /// </summary>
+    [JsonPropertyName("username")]
+    public string Username { get; set; } = string.Empty;
+
+    /// <summary>
     /// VNC连接密码。以加密形式存储（使用Windows DPAPI）。
     /// </summary>
     [JsonIgnore] // 不直接序列化密码
@@ -262,6 +268,7 @@ public sealed class ConnectionSettings
             Description = this.Description,
             Host = this.Host,
             Port = this.Port,
+            Username = this.Username,
             Password = this.Password,
             ViewOnly = this.ViewOnly,
             Quality = this.Quality,

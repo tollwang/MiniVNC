@@ -118,6 +118,34 @@ public sealed class RfbProtocol : IDisposable
 
     #endregion
 
+    #region Apple/ARD 认证（安全类型30）
+
+    /// <summary>
+    /// 读取 Apple Diffie-Hellman 认证参数：generator(2) + keyLength(2) + prime(keyLength) + serverPublicKey(keyLength)。
+    /// </summary>
+    public async Task<(int Generator, byte[] Prime, byte[] ServerPublicKey)> ReadAppleDhParamsAsync(CancellationToken ct = default)
+    {
+        ushort generator = await _stream.ReadUInt16Async(ct);
+        ushort keyLength = await _stream.ReadUInt16Async(ct);
+        if (keyLength == 0 || keyLength > 8192)
+            throw new IOException($"ARD 认证密钥长度异常: {keyLength}");
+
+        byte[] prime = await _stream.ReadExactlyAsync(keyLength, ct);
+        byte[] serverPublicKey = await _stream.ReadExactlyAsync(keyLength, ct);
+        return (generator, prime, serverPublicKey);
+    }
+
+    /// <summary>
+    /// 发送 ARD 认证响应：加密凭据(128) + 客户端公钥(keyLength)。
+    /// </summary>
+    public void WriteAppleDhResponse(byte[] encryptedCredentials, byte[] clientPublicKey)
+    {
+        _stream.Write(encryptedCredentials);
+        _stream.Write(clientPublicKey);
+    }
+
+    #endregion
+
     #region 初始化
 
     /// <summary>发送客户端初始化（共享标志）。</summary>

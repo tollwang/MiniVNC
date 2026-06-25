@@ -6,11 +6,11 @@
         mc:Ignorable="d"
         Title="MiniVNC - Mac远程控制"
         Width="520"
-        Height="400"
+        Height="452"
         MinWidth="520"
-        MinHeight="400"
+        MinHeight="452"
         MaxWidth="520"
-        MaxHeight="400"
+        MaxHeight="452"
         ResizeMode="NoResize"
         WindowStartupLocation="CenterScreen"
         Background="#1E1E1E"
@@ -238,36 +238,63 @@
                 BorderThickness="0,1,0,0"
                 Padding="8,6">
             <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="80"/>
+                    <ColumnDefinition Width="86"/>
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
-                <TextBlock Grid.Column="0"
-                           Text="快速连接:"
+                <!-- 第一行：主机 + 端口 -->
+                <TextBlock Grid.Row="0" Grid.Column="0"
+                           Text="主机:"
                            Foreground="#808080"
                            VerticalAlignment="Center"
-                           Margin="0,0,8,0"/>
+                           Margin="0,0,8,4"/>
                 <TextBox x:Name="TbQuickHost"
-                         Grid.Column="1"
+                         Grid.Row="0" Grid.Column="1"
                          Style="{StaticResource DarkTextBoxStyle}"
                          VerticalAlignment="Center"
+                         Margin="0,0,0,4"
                          ToolTip="输入IP地址或主机名"/>
-                <TextBlock Grid.Column="2"
+                <TextBlock Grid.Row="0" Grid.Column="2"
                            Text="端口:"
                            Foreground="#808080"
                            VerticalAlignment="Center"
-                           Margin="8,0,4,0"/>
+                           Margin="8,0,4,4"/>
                 <TextBox x:Name="TbQuickPort"
-                         Grid.Column="3"
+                         Grid.Row="0" Grid.Column="3"
                          Style="{StaticResource DarkTextBoxStyle}"
                          Text="5900"
-                         VerticalAlignment="Center"/>
+                         VerticalAlignment="Center"
+                         Margin="0,0,0,4"/>
+
+                <!-- 第二行：用户名 + 密码 + 连接 -->
+                <TextBlock Grid.Row="1" Grid.Column="0"
+                           Text="用户名:"
+                           Foreground="#808080"
+                           VerticalAlignment="Center"
+                           Margin="0,0,8,0"/>
+                <TextBox x:Name="TbQuickUser"
+                         Grid.Row="1" Grid.Column="1"
+                         Style="{StaticResource DarkTextBoxStyle}"
+                         VerticalAlignment="Center"
+                         ToolTip="Mac 账户用户名（屏幕共享 Apple 认证需要；标准 VNC 密码可留空）"/>
+                <TextBlock Grid.Row="1" Grid.Column="2"
+                           Text="密码:"
+                           Foreground="#808080"
+                           VerticalAlignment="Center"
+                           Margin="8,0,4,0"/>
+                <PasswordBox x:Name="PbQuickPassword"
+                             Grid.Row="1" Grid.Column="3"
+                             VerticalAlignment="Center"/>
                 <Button x:Name="BtnQuickConnect"
-                        Grid.Column="4"
+                        Grid.Row="0" Grid.Column="4" Grid.RowSpan="2"
                         Style="{StaticResource ConnectButtonStyle}"
                         Margin="8,0,0,0"
                         Click="BtnQuickConnect_Click">

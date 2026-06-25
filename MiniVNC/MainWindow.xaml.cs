@@ -22,11 +22,6 @@ public partial class MainWindow : Window
     private List<ConnectionSettings> _connections = new();
 
     /// <summary>
-    /// 当前选中的连接
-    /// </summary>
-    private ConnectionSettings? _selectedConnection;
-
-    /// <summary>
     /// 连接配置文件路径
     /// </summary>
     private readonly string _configPath;

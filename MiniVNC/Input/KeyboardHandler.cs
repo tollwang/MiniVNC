@@ -56,8 +56,7 @@ public static class KeyboardHandler
         {
             // 空格和基本标点
             Key.Space => 0x0020,
-            Key.Enter => 0xFF0D,
-            Key.Return => 0xFF0D,
+            Key.Enter => 0xFF0D,   // 注: Key.Enter 与 Key.Return 在 WPF 中为同一枚举值
             Key.Escape => 0xFF1B,
             Key.Back => 0xFF08,
             Key.Tab => 0xFF09,
@@ -107,17 +106,17 @@ public static class KeyboardHandler
             Key.F12 => 0xFFC9,
 
             // 标点符号（根据Shift状态返回对应符号）
-            Key.OemMinus => Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 0x005F : 0x002D,          // _ / -
-            Key.OemPlus => Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 0x002B : 0x003D,            // + / =
-            Key.OemOpenBrackets => Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 0x007B : 0x005B,    // { / [
-            Key.OemCloseBrackets => Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 0x007D : 0x005D,   // } / ]
-            Key.OemPipe => Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 0x007C : 0x005C,            // | / \
-            Key.OemSemicolon => Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 0x003A : 0x003B,       // : / ;
-            Key.OemQuotes => Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 0x0022 : 0x0027,          // " / '
-            Key.OemComma => Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 0x003C : 0x002C,           // < / ,
-            Key.OemPeriod => Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 0x003E : 0x002E,          // > / .
-            Key.OemQuestion => Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 0x003F : 0x002F,        // ? / /
-            Key.OemTilde => Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 0x007E : 0x0060,           // ~ / `
+            Key.OemMinus => Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 0x005Fu : 0x002Du,          // _ / -
+            Key.OemPlus => Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 0x002Bu : 0x003Du,            // + / =
+            Key.OemOpenBrackets => Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 0x007Bu : 0x005Bu,    // { / [
+            Key.OemCloseBrackets => Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 0x007Du : 0x005Du,   // } / ]
+            Key.OemPipe => Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 0x007Cu : 0x005Cu,            // | / \
+            Key.OemSemicolon => Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 0x003Au : 0x003Bu,       // : / ;
+            Key.OemQuotes => Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 0x0022u : 0x0027u,          // " / '
+            Key.OemComma => Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 0x003Cu : 0x002Cu,           // < / ,
+            Key.OemPeriod => Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 0x003Eu : 0x002Eu,          // > / .
+            Key.OemQuestion => Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 0x003Fu : 0x002Fu,        // ? / /
+            Key.OemTilde => Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 0x007Eu : 0x0060u,           // ~ / `
 
             // 数字键盘运算键
             Key.Add => 0xFFAB,

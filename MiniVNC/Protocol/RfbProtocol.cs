@@ -225,6 +225,20 @@ public sealed class RfbProtocol : IDisposable
         _stream.WriteUInt32(keysym);
     }
 
+    /// <summary>
+    /// 发送 EnableContinuousUpdates 消息（扩展，类型150）：对指定区域开启/停用服务器连续推送。
+    /// 报文：u8 类型(150) + u8 enable + u16 x + u16 y + u16 w + u16 h。
+    /// </summary>
+    public void WriteEnableContinuousUpdates(bool enable, ushort x, ushort y, ushort width, ushort height)
+    {
+        _stream.WriteByte((byte)ClientMessageType.EnableContinuousUpdates);
+        _stream.WriteByte(enable ? (byte)1 : (byte)0);
+        _stream.WriteUInt16(x);
+        _stream.WriteUInt16(y);
+        _stream.WriteUInt16(width);
+        _stream.WriteUInt16(height);
+    }
+
     /// <summary>发送 PointerEvent 消息。</summary>
     public void WritePointerEvent(byte buttonMask, ushort x, ushort y)
     {

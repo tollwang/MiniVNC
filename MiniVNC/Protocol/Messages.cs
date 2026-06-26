@@ -248,7 +248,13 @@ public enum ServerMessageType : byte
     /// <summary>
     /// 服务器剪贴板文本消息，服务器向客户端发送剪贴板内容。
     /// </summary>
-    ServerCutText = 3
+    ServerCutText = 3,
+
+    /// <summary>
+    /// 连续更新结束（扩展消息，类型150）。服务器收到含连续更新伪编码的 SetEncodings 后会发此消息
+    /// 表示"支持连续更新"；也在停用连续更新后发此消息标记边界。客户端据此开启连续更新。
+    /// </summary>
+    EndOfContinuousUpdates = 150
 }
 
 /// <summary>
@@ -284,7 +290,12 @@ public enum ClientMessageType : byte
     /// <summary>
     /// 客户端剪贴板文本消息，客户端向服务器发送剪贴板内容。
     /// </summary>
-    ClientCutText = 6
+    ClientCutText = 6,
+
+    /// <summary>
+    /// 启用/停用连续更新（扩展消息，类型150）。开启后服务器主动推送指定区域的增量更新。
+    /// </summary>
+    EnableContinuousUpdates = 150
 }
 
 /// <summary>
@@ -313,4 +324,11 @@ public static class EncodingTypes
     /// 不修改帧缓冲，由客户端本地渲染光标——消除光标跟手延迟，并避免与服务器画入的光标重影。
     /// </summary>
     public const int Cursor = -239;
+
+    /// <summary>
+    /// 连续更新伪编码(-313)。客户端协商支持后，服务器会回发 EndOfContinuousUpdates 表示支持，
+    /// 客户端再发 EnableContinuousUpdates 开启——之后服务器对指定区域**主动推送**增量更新，
+    /// 无需每帧再发 FramebufferUpdateRequest，省掉一次往返延迟、更跟手。服务器不支持时自动回退。
+    /// </summary>
+    public const int ContinuousUpdates = -313;
 }

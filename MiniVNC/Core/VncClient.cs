@@ -147,6 +147,12 @@ public sealed class VncClient : IDisposable
     private int _lastCursorW, _lastCursorH, _lastCursorHotX, _lastCursorHotY;
 
     /// <summary>
+    /// 服务器是否已开启连续更新（收到 EndOfContinuousUpdates 后开启）。开启后服务器主动推送增量，
+    /// 客户端不再逐帧发 FramebufferUpdateRequest。仅消息循环线程访问。
+    /// </summary>
+    private bool _continuousUpdates;
+
+    /// <summary>
     /// 创建 <see cref="VncClient"/>。
     /// 注册的解码器：Raw、Hextile（CopyRect 在消息循环中内联处理）。
     /// </summary>
@@ -303,7 +309,8 @@ public sealed class VncClient : IDisposable
             EncodingTypes.Hextile,
             EncodingTypes.CopyRect,
             EncodingTypes.Raw,
-            EncodingTypes.Cursor   // 伪编码：请求服务器以光标形状推送，由客户端本地渲染
+            EncodingTypes.Cursor,            // 伪编码：服务器以光标形状推送，客户端本地渲染
+            EncodingTypes.ContinuousUpdates  // 伪编码：协商连续更新（服务器支持则主动推帧，省往返延迟）
         };
         _protocol.WriteSetEncodings(preferredEncodings);
 
@@ -387,6 +394,17 @@ public sealed class VncClient : IDisposable
 
         bool inc = incremental; ushort bx = (ushort)x, by = (ushort)y, bw = (ushort)w, bh = (ushort)h;
         Enqueue(() => p.WriteFramebufferUpdateRequest(inc, bx, by, bw, bh));
+    }
+
+    /// <summary>对指定区域开启服务器连续更新（收到 EndOfContinuousUpdates 后调用）。</summary>
+    private void EnableContinuousUpdates(int x, int y, int w, int h)
+    {
+        if (_disposed) return;
+        var p = _protocol;
+        if (p == null || !IsConnected) return;
+
+        ushort bx = (ushort)x, by = (ushort)y, bw = (ushort)w, bh = (ushort)h;
+        Enqueue(() => p.WriteEnableContinuousUpdates(true, bx, by, bw, bh));
     }
 
     /// <summary>
@@ -573,12 +591,23 @@ public sealed class VncClient : IDisposable
                         await SkipSetColorMapEntriesAsync(ct);
                         break;
 
+                    case ServerMessageType.EndOfContinuousUpdates:
+                        // 服务器支持连续更新：开启后由服务器主动推帧，客户端不再逐帧请求（省往返延迟）。
+                        if (!_continuousUpdates)
+                        {
+                            _continuousUpdates = true;
+                            EnableContinuousUpdates(0, 0, FramebufferWidth, FramebufferHeight);
+                            StatusChanged?.Invoke(this, "已启用连续更新（更跟手）");
+                        }
+                        break;
+
                     default:
                         // 未知消息类型会导致流无法继续解析，断开以避免读到垃圾数据
                         throw new IOException($"收到未知的服务器消息类型: {(byte)messageType}");
                 }
 
-                if (needsUpdateRequest && IsConnected && _protocol != null)
+                // 连续更新开启后服务器会主动推送，无需逐帧再请求增量；否则保持请求-应答循环。
+                if (needsUpdateRequest && !_continuousUpdates && IsConnected && _protocol != null)
                 {
                     RequestFramebufferUpdate(true, 0, 0, FramebufferWidth, FramebufferHeight);
                 }

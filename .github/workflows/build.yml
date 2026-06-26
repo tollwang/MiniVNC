@@ -58,6 +58,30 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" publish/MiniVNC.exe \
-            --title "MiniVNC ${GITHUB_REF_NAME}" \
-            --notes "自动编译的 Windows x64 单文件版本(免安装,目标机无需 .NET 运行时)。"
+          VER="${GITHUB_REF_NAME}"
+          NOTES_FILE="$(mktemp)"
+
+          # 从 CHANGELOG.md 提取本版小节(## vX.Y.Z 到下一个 ## 之间)作为发布说明
+          SECTION="$(awk -v ver="## ${VER}" '
+            $0 == ver { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md)"
+
+          if [ -n "$SECTION" ]; then
+            printf '%s\n' "$SECTION" > "$NOTES_FILE"
+          else
+            # CHANGELOG 里没有该版本小节时,回退到提交记录提示
+            echo "本版变更详见提交记录与 CHANGELOG.md。" > "$NOTES_FILE"
+          fi
+
+          # 统一附上下载说明
+          {
+            echo ""
+            echo "---"
+            echo "Windows x64 单文件自包含版本,免安装、目标机无需预装 .NET 运行时。"
+          } >> "$NOTES_FILE"
+
+          gh release create "$VER" publish/MiniVNC.exe \
+            --title "MiniVNC ${VER}" \
+            --notes-file "$NOTES_FILE"

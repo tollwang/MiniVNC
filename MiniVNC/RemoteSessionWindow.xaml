@@ -86,27 +86,9 @@
                 Padding="8,6"
                 VerticalAlignment="Top"
                 Opacity="0"
-                Visibility="Collapsed">
-            <Border.Triggers>
-                <EventTrigger RoutedEvent="Border.MouseEnter">
-                    <BeginStoryboard>
-                        <Storyboard>
-                            <DoubleAnimation Storyboard.TargetProperty="Opacity"
-                                             To="1"
-                                             Duration="0:0:0.2"/>
-                        </Storyboard>
-                    </BeginStoryboard>
-                </EventTrigger>
-                <EventTrigger RoutedEvent="Border.MouseLeave">
-                    <BeginStoryboard>
-                        <Storyboard>
-                            <DoubleAnimation Storyboard.TargetProperty="Opacity"
-                                             To="0"
-                                             Duration="0:0:0.3"/>
-                        </Storyboard>
-                    </BeginStoryboard>
-                </EventTrigger>
-            </Border.Triggers>
+                Visibility="Collapsed"
+                MouseEnter="ToolbarPanel_MouseEnter"
+                MouseLeave="ToolbarPanel_MouseLeave">
             <StackPanel Orientation="Horizontal">
                 <!-- 返回窗口模式 -->
                 <Button x:Name="BtnWindowed"

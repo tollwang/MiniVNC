@@ -304,69 +304,71 @@ public class VncViewport : Control
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+        SyncButtonsAndSend(e);
+    }
+
+    /// <summary>
+    /// 从事件参数同步真实按钮状态并发送指针事件（不捕获鼠标）。
+    /// 按当前 e.LeftButton/MiddleButton/RightButton 重算掩码，能自动纠正任何漏掉的按下/松开，
+    /// 避免远端按键卡死；不捕获鼠标，确保顶部工具栏触发区与按钮始终能收到鼠标。
+    /// </summary>
+    private void SyncButtonsAndSend(MouseEventArgs e)
+    {
         if (_client == null) return;
+
+        int mask = 0;
+        if (e.LeftButton == MouseButtonState.Pressed) mask |= 1;
+        if (e.MiddleButton == MouseButtonState.Pressed) mask |= 2;
+        if (e.RightButton == MouseButtonState.Pressed) mask |= 4;
+        _buttonMask = mask;
 
         var pos = e.GetPosition(this);
         var rect = CalculateRenderRect();
-
         var remotePos = MouseHandler.LocalToRemote(
-            pos, rect,
-            _client.FramebufferWidth,
-            _client.FramebufferHeight);
-
+            pos, rect, _client.FramebufferWidth, _client.FramebufferHeight);
         int rx = (int)remotePos.X, ry = (int)remotePos.Y;
 
-        // 去重：远程像素与按钮状态都没变就不重复发（缩放后大量本地移动会落到同一远程像素，
-        // 避免洪泛 socket，既更跟手也减少卡顿）
-        if (rx == _lastSentX && ry == _lastSentY && _buttonMask == _lastSentMask)
+        // 去重：远程像素与按钮状态都没变就不重复发
+        if (rx == _lastSentX && ry == _lastSentY && mask == _lastSentMask)
         {
             _lastMousePos = pos;
             return;
         }
-        _lastSentX = rx; _lastSentY = ry; _lastSentMask = _buttonMask;
+        _lastSentX = rx; _lastSentY = ry; _lastSentMask = mask;
 
-        _client.SendPointerEvent(rx, ry, _buttonMask);
+        _client.SendPointerEvent(rx, ry, mask);
         _lastMousePos = pos;
     }
 
-    /// <summary>
-    /// 鼠标按下事件
-    /// </summary>
+    /// <summary>鼠标按下事件</summary>
     protected override void OnMouseDown(MouseButtonEventArgs e)
     {
         base.OnMouseDown(e);
-        _buttonMask |= MouseHandler.GetButtonMask(e.ChangedButton);
-        CaptureMouse(); // 捕获鼠标：即使指针移出控件也能收到 MouseUp，避免按住状态残留
-        OnMouseMove(e);
+        SyncButtonsAndSend(e);
         Focus();
     }
 
-    /// <summary>
-    /// 鼠标释放事件
-    /// </summary>
+    /// <summary>鼠标释放事件</summary>
     protected override void OnMouseUp(MouseButtonEventArgs e)
     {
         base.OnMouseUp(e);
-        _buttonMask &= ~MouseHandler.GetButtonMask(e.ChangedButton);
-        OnMouseMove(e);
-        if (_buttonMask == 0) ReleaseMouseCapture();
+        SyncButtonsAndSend(e);
     }
 
     /// <summary>
-    /// 鼠标捕获丢失（如断连/窗口失活）时清零按钮掩码并通知服务器，避免远端"幽灵按住/拖拽"。
+    /// 指针离开视口（如去操作顶部工具栏）：释放远端按钮，避免"幽灵按住/拖拽"。
     /// </summary>
-    protected override void OnLostMouseCapture(MouseEventArgs e)
+    protected override void OnMouseLeave(MouseEventArgs e)
     {
-        base.OnLostMouseCapture(e);
-        if (_buttonMask != 0)
+        base.OnMouseLeave(e);
+        if (_buttonMask != 0 && _client != null)
         {
             _buttonMask = 0;
             var rect = CalculateRenderRect();
             var remotePos = MouseHandler.LocalToRemote(
-                _lastMousePos, rect,
-                _client?.FramebufferWidth ?? 1,
-                _client?.FramebufferHeight ?? 1);
-            _client?.SendPointerEvent((int)remotePos.X, (int)remotePos.Y, 0);
+                _lastMousePos, rect, _client.FramebufferWidth, _client.FramebufferHeight);
+            _lastSentMask = 0;
+            _client.SendPointerEvent((int)remotePos.X, (int)remotePos.Y, 0);
         }
     }
 

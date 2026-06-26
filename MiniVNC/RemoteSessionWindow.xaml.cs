@@ -45,14 +45,11 @@ public partial class RemoteSessionWindow : Window
     private bool _clipboardSyncEnabled = true;
 
     /// <summary>
-    /// 上次剪贴板内容（防止重复同步）
+    /// 上次"见过"的剪贴板内容（发出或收到的）。两个方向共用这一个值判重：
+    /// 本地剪贴板 != 它 → 是新的本地内容，发往服务器；服务器内容 != 它 → 是新的远端内容，写入本地。
+    /// 因为收/发都会把它更新为同一值，天然防止来回回声，无需额外的"同步中"标志。
     /// </summary>
-    private string _lastClipboardText = string.Empty;
-
-    /// <summary>
-    /// 剪贴板同步中标志（防止双向同步死循环）。跨线程读写，标记为 volatile。
-    /// </summary>
-    private volatile bool _isSyncingClipboard = false;
+    private volatile string _lastClipboard = string.Empty;
 
     /// <summary>渲染合并锁。</summary>
     private readonly object _renderLock = new();
@@ -386,21 +383,15 @@ public partial class RemoteSessionWindow : Window
     /// </summary>
     private void OnServerClipboardChanged(object? sender, string text)
     {
-        if (!_clipboardSyncEnabled || _isSyncingClipboard) return;
+        if (!_clipboardSyncEnabled) return;
 
         Dispatcher.BeginInvoke(() =>
         {
-            if (!string.IsNullOrEmpty(text) && text != _lastClipboardText)
+            // 远端剪贴板有新内容 → 写入本地剪贴板，并更新判重值（下次发送循环看到相同值便不会回发）
+            if (!string.IsNullOrEmpty(text) && text != _lastClipboard)
             {
-                _isSyncingClipboard = true;
-                _lastClipboardText = text;
+                _lastClipboard = text;
                 ClipboardHelper.SetText(text);
-                // 延迟重置标志，给服务器响应时间
-                Task.Run(async () =>
-                {
-                    await Task.Delay(100);
-                    _isSyncingClipboard = false;
-                });
             }
         });
     }
@@ -443,29 +434,23 @@ public partial class RemoteSessionWindow : Window
         {
             Interval = TimeSpan.FromMilliseconds(500)
         };
-        _clipboardTimer.Tick += async (s, e) =>
+        _clipboardTimer.Tick += (s, e) =>
         {
-            if (_userClosing || !_clipboardSyncEnabled || !_client.IsConnected || _isSyncingClipboard) return;
+            if (_userClosing || !_clipboardSyncEnabled || !_client.IsConnected) return;
 
             try
             {
                 var text = ClipboardHelper.GetText();
-                if (!string.IsNullOrEmpty(text) && text != _lastClipboardText)
+                // 本地剪贴板有新内容（不等于上次见过的值）→ 发往服务器
+                if (!string.IsNullOrEmpty(text) && text != _lastClipboard)
                 {
-                    _isSyncingClipboard = true;
-                    _lastClipboardText = text;
+                    _lastClipboard = text;
                     _client.SendCutText(text);
                 }
             }
             catch
             {
                 // 剪贴板访问可能失败，忽略错误
-            }
-            finally
-            {
-                // 延迟重置标志，给服务器响应时间
-                await Task.Delay(100);
-                _isSyncingClipboard = false;
             }
         };
         _clipboardTimer.Start();
@@ -663,28 +648,42 @@ public partial class RemoteSessionWindow : Window
         _toolbarHideTimer?.Start();
     }
 
-    /// <summary>
-    /// 显示工具栏
-    /// </summary>
-    private void ShowToolbar()
+    /// <summary>鼠标进入工具栏本身：保持显示并暂停隐藏计时（方便点击按钮）。</summary>
+    private void ToolbarPanel_MouseEnter(object sender, MouseEventArgs e)
     {
-        ToolbarPanel.Visibility = Visibility.Visible;
-        ToolbarPanel.BeginAnimation(OpacityProperty,
-            new System.Windows.Media.Animation.DoubleAnimation(1, TimeSpan.FromMilliseconds(200)));
+        ShowToolbar();
+        _toolbarHideTimer?.Stop();
+    }
+
+    /// <summary>鼠标离开工具栏：重启隐藏计时。</summary>
+    private void ToolbarPanel_MouseLeave(object sender, MouseEventArgs e)
+    {
+        _toolbarHideTimer?.Stop();
+        _toolbarHideTimer?.Start();
     }
 
     /// <summary>
-    /// 隐藏工具栏
+    /// 显示工具栏（确定性）：先清除任何残留动画的"保持"，再直接置 Opacity=1 + 可见。
+    /// 避免与隐藏动画/触发器互相打架导致卡在 Opacity=0（看着像消失）。
+    /// </summary>
+    private void ShowToolbar()
+    {
+        ToolbarPanel.BeginAnimation(OpacityProperty, null);
+        ToolbarPanel.Opacity = 1;
+        ToolbarPanel.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>
+    /// 隐藏工具栏（确定性淡出）：淡出后清除动画保持并折叠。
     /// </summary>
     private void HideToolbar()
     {
-        var anim = new System.Windows.Media.Animation.DoubleAnimation(0, TimeSpan.FromMilliseconds(300));
+        var anim = new System.Windows.Media.Animation.DoubleAnimation(0, TimeSpan.FromMilliseconds(250));
         anim.Completed += (s, e) =>
         {
-            if (ToolbarPanel.Opacity == 0)
-            {
-                ToolbarPanel.Visibility = Visibility.Collapsed;
-            }
+            ToolbarPanel.BeginAnimation(OpacityProperty, null);
+            ToolbarPanel.Opacity = 0;
+            ToolbarPanel.Visibility = Visibility.Collapsed;
         };
         ToolbarPanel.BeginAnimation(OpacityProperty, anim);
     }

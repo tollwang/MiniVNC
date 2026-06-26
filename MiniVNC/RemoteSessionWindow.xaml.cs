@@ -147,8 +147,8 @@ public partial class RemoteSessionWindow : Window
     {
         try
         {
-            // 首次连接最多尝试 4 次：退出后立即重连时 macOS 可能尚未释放上一会话而重置连接
-            await ConnectSequenceAsync(4);
+            // 首次连接最多尝试 5 次、递增退避（~27 秒）：退出后重连时 macOS 上一会话尚未释放会重置连接
+            await ConnectSequenceAsync(5);
         }
         catch (OperationCanceledException)
         {
@@ -208,9 +208,12 @@ public partial class RemoteSessionWindow : Window
             }
             catch (Exception ex) when (attempt < maxConnectAttempts && !_userClosing && IsTransientConnectError(ex))
             {
-                // 重建客户端（旧的可能已部分初始化/释放），退避后重试
+                // 重建客户端（旧的可能已部分初始化/释放），递增退避后重试。
+                // 退避故意拉长（不猛连）：macOS 屏幕共享上一会话的 screensharingd 需较长时间
+                // （十几秒~几十秒）才释放，期间快速重连还会触发限流。退避 ~3,5,8,11s（总 ~27s）。
                 RebuildClient();
-                try { await Task.Delay(attempt * 1000); } catch { }
+                int delayMs = 3000 + (attempt - 1) * 2500;
+                try { await Task.Delay(delayMs); } catch { }
             }
             // 非瞬时错误（认证失败/超时/未协商编码等）或已到最大次数：异常向上抛，由 Window_Loaded 显示
         }
@@ -748,7 +751,7 @@ public partial class RemoteSessionWindow : Window
         try
         {
             RebuildClient();
-            await ConnectSequenceAsync(4); // 手动重连同样对瞬时重置重试
+            await ConnectSequenceAsync(5); // 手动重连同样对瞬时重置重试
             UpdateStatus("重连成功");
         }
         catch (OperationCanceledException)

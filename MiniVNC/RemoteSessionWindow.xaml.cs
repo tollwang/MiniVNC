@@ -147,7 +147,8 @@ public partial class RemoteSessionWindow : Window
     {
         try
         {
-            await ConnectSequenceAsync();
+            // 首次连接最多尝试 4 次：退出后立即重连时 macOS 可能尚未释放上一会话而重置连接
+            await ConnectSequenceAsync(4);
         }
         catch (OperationCanceledException)
         {
@@ -168,34 +169,59 @@ public partial class RemoteSessionWindow : Window
     }
 
     /// <summary>
-    /// 执行一次完整的连接序列（连接→认证→初始化→启动循环）。
+    /// 执行完整的连接序列（连接→认证→初始化→启动循环）。
     /// 用于首次连接与自动/手动重连复用。带 25 秒超时；关窗时安全退出。
+    /// 对“连接被重置/Socket 级”瞬时错误最多重试 <paramref name="maxConnectAttempts"/> 次
+    /// （退出后立即重连 macOS 常因上一会话未释放而重置）。认证失败/超时不重试。
     /// </summary>
-    private async Task ConnectSequenceAsync()
+    private async Task ConnectSequenceAsync(int maxConnectAttempts = 1)
     {
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+        for (int attempt = 1; ; attempt++)
+        {
+            if (_userClosing) return;
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+            try
+            {
+                UpdateStatus(attempt == 1
+                    ? $"正在连接 {_settings.Host}:{_settings.Port}..."
+                    : $"连接被重置，正在重试（{attempt}/{maxConnectAttempts}）...");
 
-        UpdateStatus($"正在连接 {_settings.Host}:{_settings.Port}...");
+                await _client.ConnectAsync(_settings.Host, _settings.Port, cts.Token);
+                await _client.AuthenticateAsync(_settings.Username ?? "", _settings.Password ?? "", cts.Token);
+                _client.PreferredColorDepth = _settings.ColorDepth == 16 ? 16 : 32;
+                _client.ViewOnly = _settings.ViewOnly;
+                await _client.InitializeAsync(cts.Token);
 
-        await _client.ConnectAsync(_settings.Host, _settings.Port, cts.Token);
-        await _client.AuthenticateAsync(_settings.Username ?? "", _settings.Password ?? "", cts.Token);
-        _client.PreferredColorDepth = _settings.ColorDepth == 16 ? 16 : 32;
-        _client.ViewOnly = _settings.ViewOnly;
-        await _client.InitializeAsync(cts.Token);
+                // 连接过程中窗口已被关闭：安全退出，不再操作已释放的对象
+                if (_userClosing) return;
 
-        // 连接过程中窗口已被关闭：安全退出，不再操作已释放的对象
-        if (_userClosing) return;
+                VncViewport.SetClient(_client);
+                _client.StartUpdateLoop();
+                _lastConnectTime = DateTime.UtcNow;
 
-        VncViewport.SetClient(_client);
-        _client.StartUpdateLoop();
-        _lastConnectTime = DateTime.UtcNow;
+                // 初始化完成后尺寸已知，立即更新分辨率显示（避免显示 0x0）
+                TbResolution.Text = $"{_client.FramebufferWidth}x{_client.FramebufferHeight}";
 
-        // 初始化完成后尺寸已知，立即更新分辨率显示（避免显示 0x0）
-        TbResolution.Text = $"{_client.FramebufferWidth}x{_client.FramebufferHeight}";
-
-        StartTimersOnce();
-        // 初始完整更新请求已由 StartUpdateLoop 发起，增量更新由消息循环驱动。
+                StartTimersOnce();
+                // 初始完整更新请求已由 StartUpdateLoop 发起，增量更新由消息循环驱动。
+                return; // 成功
+            }
+            catch (Exception ex) when (attempt < maxConnectAttempts && !_userClosing && IsTransientConnectError(ex))
+            {
+                // 重建客户端（旧的可能已部分初始化/释放），退避后重试
+                RebuildClient();
+                try { await Task.Delay(attempt * 1000); } catch { }
+            }
+            // 非瞬时错误（认证失败/超时/未协商编码等）或已到最大次数：异常向上抛，由 Window_Loaded 显示
+        }
     }
+
+    /// <summary>
+    /// 是否为“连接级瞬时错误”（被重置/无法读取/Socket 级）。
+    /// 不含认证失败(InvalidOperationException)与超时(OperationCanceledException)，这些不应重试。
+    /// </summary>
+    private static bool IsTransientConnectError(Exception ex)
+        => ex is System.Net.Sockets.SocketException || ex is System.IO.IOException;
 
     /// <summary>启动状态/剪贴板定时器（只启动一次，重连时不重复创建）。</summary>
     private void StartTimersOnce()
@@ -722,7 +748,7 @@ public partial class RemoteSessionWindow : Window
         try
         {
             RebuildClient();
-            await ConnectSequenceAsync();
+            await ConnectSequenceAsync(4); // 手动重连同样对瞬时重置重试
             UpdateStatus("重连成功");
         }
         catch (OperationCanceledException)

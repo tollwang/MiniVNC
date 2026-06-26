@@ -25,6 +25,12 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+
+        // 标题栏显示版本号（运行时读程序集版本，自动跟随 csproj，无需二次维护）
+        var v = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
+        if (v != null)
+            Title = $"MiniVNC v{v.Major}.{v.Minor}.{v.Build} - Mac远程控制";
+
         LoadConnections();
     }
 

@@ -1,5 +1,6 @@
 using System.IO;
 using System.Net.Sockets;
+using System.Threading.Channels;
 using MiniVNC.Network;
 using MiniVNC.Protocol;
 using MiniVNC.Encodings;
@@ -133,10 +134,12 @@ public sealed class VncClient : IDisposable
     private readonly SemaphoreSlim _connectionLock = new(1, 1);
 
     /// <summary>
-    /// 客户端消息写锁。会话期间 UI 线程（鼠标/键盘/剪贴板）与后台消息循环
-    /// （增量更新请求）都会向网络流写入，必须串行化每条完整消息，避免字节交错。
+    /// 客户端写队列。会话期间 UI 线程（鼠标/键盘/剪贴板）与消息循环（增量更新请求）只把
+    /// "写动作"入队（非阻塞），由唯一的后台写线程串行执行真正的 socket 写——
+    /// 避免发送缓冲填满时同步写阻塞 UI 线程造成卡死/无响应。
     /// </summary>
-    private readonly object _writeLock = new();
+    private Channel<Action>? _writeQueue;
+    private Task? _writerTask;
     private bool _disposed;
 
     // ---- 光标去重（仅消息循环线程访问，无需加锁）----
@@ -317,37 +320,48 @@ public sealed class VncClient : IDisposable
 
         // 取消之前的循环
         _cts?.Cancel();
+        _writeQueue?.Writer.TryComplete();
         try { _messageLoopTask?.Wait(TimeSpan.FromSeconds(5)); } catch (AggregateException) { }
+        try { _writerTask?.Wait(TimeSpan.FromSeconds(2)); } catch (AggregateException) { }
         _cts?.Dispose();
 
         _cts = new CancellationTokenSource();
+        // 单读多写：UI 线程与消息循环都可入队，由唯一写线程消费
+        _writeQueue = Channel.CreateUnbounded<Action>(new UnboundedChannelOptions { SingleReader = true });
+        _writerTask = Task.Run(() => WriterLoopAsync(_writeQueue.Reader, _cts.Token));
         _messageLoopTask = Task.Run(() => MessageLoopAsync(_cts.Token));
 
         // 初始请求完整屏幕（非增量）
         RequestFramebufferUpdate(false, 0, 0, FramebufferWidth, FramebufferHeight);
     }
 
+    /// <summary>把一个"写动作"入队（非阻塞）。连接未就绪/队列已关闭则丢弃。</summary>
+    private void Enqueue(Action write)
+    {
+        _writeQueue?.Writer.TryWrite(write);
+    }
+
     /// <summary>发送鼠标/指针事件。仅查看模式下不发送。</summary>
     public void SendPointerEvent(int x, int y, int buttonMask)
     {
         if (_disposed) return;
-        if (_protocol == null || !IsConnected || ViewOnly) return;
+        var p = _protocol;
+        if (p == null || !IsConnected || ViewOnly) return;
 
         x = Math.Clamp(x, 0, Math.Max(0, FramebufferWidth - 1));
         y = Math.Clamp(y, 0, Math.Max(0, FramebufferHeight - 1));
-
-        try { lock (_writeLock) { _protocol.WritePointerEvent((byte)buttonMask, (ushort)x, (ushort)y); } }
-        catch (Exception ex) { ErrorOccurred?.Invoke(this, ex); }
+        byte bm = (byte)buttonMask; ushort bx = (ushort)x; ushort by = (ushort)y;
+        Enqueue(() => p.WritePointerEvent(bm, bx, by));
     }
 
     /// <summary>发送键盘事件。仅查看模式下不发送。</summary>
     public void SendKeyEvent(uint keysym, bool pressed)
     {
         if (_disposed) return;
-        if (_protocol == null || !IsConnected || ViewOnly) return;
+        var p = _protocol;
+        if (p == null || !IsConnected || ViewOnly) return;
 
-        try { lock (_writeLock) { _protocol.WriteKeyEvent(pressed, keysym); } }
-        catch (Exception ex) { ErrorOccurred?.Invoke(this, ex); }
+        Enqueue(() => p.WriteKeyEvent(pressed, keysym));
     }
 
     /// <summary>发送剪贴板文本到服务器（限制最大1MB，防止超大剪贴板整包发出）。</summary>
@@ -355,33 +369,45 @@ public sealed class VncClient : IDisposable
     {
         if (_disposed) return;
         if (text == null) return;
-        if (_protocol == null || !IsConnected || ViewOnly) return;
+        var p = _protocol;
+        if (p == null || !IsConnected || ViewOnly) return;
 
         // 防错：限制剪贴板发送大小
         const int maxLen = 1024 * 1024;
-        if (text.Length > maxLen) text = text.Substring(0, maxLen);
-
-        try { lock (_writeLock) { _protocol.WriteCutText(text); } }
-        catch (Exception ex) { ErrorOccurred?.Invoke(this, ex); }
+        string t = text.Length > maxLen ? text.Substring(0, maxLen) : text;
+        Enqueue(() => p.WriteCutText(t));
     }
 
     /// <summary>请求帧缓冲更新。</summary>
     public void RequestFramebufferUpdate(bool incremental, int x, int y, int w, int h)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        if (_protocol == null || !IsConnected) return; // 静默失败
+        if (_disposed) return;
+        var p = _protocol;
+        if (p == null || !IsConnected) return; // 静默失败
 
+        bool inc = incremental; ushort bx = (ushort)x, by = (ushort)y, bw = (ushort)w, bh = (ushort)h;
+        Enqueue(() => p.WriteFramebufferUpdateRequest(inc, bx, by, bw, bh));
+    }
+
+    /// <summary>
+    /// 后台写线程：从队列取出写动作并同步执行（受 socket SendTimeout 约束）。
+    /// 写失败（超时/连接重置）即上报并关闭流，触发消息循环读出错 → 正常断开/自动重连。
+    /// </summary>
+    private async Task WriterLoopAsync(ChannelReader<Action> reader, CancellationToken ct)
+    {
         try
         {
-            lock (_writeLock)
+            await foreach (Action write in reader.ReadAllAsync(ct))
             {
-                _protocol.WriteFramebufferUpdateRequest(
-                    incremental, (ushort)x, (ushort)y, (ushort)w, (ushort)h);
+                write();
             }
         }
+        catch (OperationCanceledException) { /* 正常取消 */ }
+        catch (ChannelClosedException) { /* 正常关闭 */ }
         catch (Exception ex)
         {
             ErrorOccurred?.Invoke(this, ex);
+            try { _stream?.Dispose(); } catch { } // 关闭流以唤醒消息循环的阻塞读 → 触发断开/重连
         }
     }
 
@@ -397,7 +423,11 @@ public sealed class VncClient : IDisposable
         try { _cts?.Cancel(); }
         catch (ObjectDisposedException) { }
 
+        _writeQueue?.Writer.TryComplete(); // 结束写线程的 ReadAllAsync
+
         try { _messageLoopTask?.Wait(TimeSpan.FromSeconds(2)); }
+        catch (AggregateException) { }
+        try { _writerTask?.Wait(TimeSpan.FromSeconds(2)); }
         catch (AggregateException) { }
 
         try { _stream?.Dispose(); }

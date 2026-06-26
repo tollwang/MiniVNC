@@ -33,7 +33,7 @@ public class VncStream : IDisposable
     {
         _tcpClient = new TcpClient();
         _tcpClient.Connect(host, port);
-        _tcpClient.NoDelay = true; // 关闭 Nagle：VNC 大量小消息需立即发送
+        ConfigureSocket();
         _stream = _tcpClient.GetStream();
     }
 
@@ -48,8 +48,28 @@ public class VncStream : IDisposable
     public async Task ConnectAsync(string host, int port, CancellationToken ct = default)
     {
         await _tcpClient.ConnectAsync(host, port, ct);
-        _tcpClient.NoDelay = true; // 关闭 Nagle：VNC 大量小消息需立即发送，避免首连握手卡顿
+        ConfigureSocket();
         _stream = _tcpClient.GetStream();
+    }
+
+    /// <summary>
+    /// 连接成功后配置 socket：关 Nagle（小消息立即发）、设发送超时（避免发送缓冲填满时同步写无限阻塞）、
+    /// 开启 TCP keepalive（空闲时也能在 ~30 秒内发现半死连接 → 触发重连）。
+    /// </summary>
+    private void ConfigureSocket()
+    {
+        _tcpClient.NoDelay = true;
+        _tcpClient.SendTimeout = 5000; // 同步写 5 秒超时
+        try
+        {
+            var sock = _tcpClient.Client;
+            sock.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+            sock.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime, 15);      // 空闲 15s 后开始探测
+            sock.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveInterval, 5);   // 每 5s 探测一次
+            sock.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount, 3); // 3 次无应答即判死
+        }
+        catch { /* 个别平台不支持这些 keepalive 选项，忽略 */ }
+        // 不设 ReceiveTimeout：增量更新请求需长时间阻塞等待服务器推送（空闲时可达数分钟）。
     }
 
     /// <summary>

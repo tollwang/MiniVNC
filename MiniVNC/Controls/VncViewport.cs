@@ -37,6 +37,9 @@ public class VncViewport : Control
     /// </summary>
     private int _buttonMask;
 
+    /// <summary>上次实际发送的远程坐标与按钮掩码（用于鼠标移动去重）。-1 表示尚未发送。</summary>
+    private int _lastSentX = -1, _lastSentY = -1, _lastSentMask = -1;
+
     /// <summary>
     /// 已按下的物理键 → 按下时实际发送的 keysym。用于松开时回放同一 keysym，
     /// 以及焦点丢失/断连时释放全部按下键。
@@ -138,6 +141,7 @@ public class VncViewport : Control
         // 重置输入状态，避免上次会话残留的按键/按钮掩码影响新会话
         _buttonMask = 0;
         _pressedKeys.Clear();
+        _lastSentX = _lastSentY = _lastSentMask = -1;
 
         if (_client?.Framebuffer != null)
         {
@@ -310,11 +314,18 @@ public class VncViewport : Control
             _client.FramebufferWidth,
             _client.FramebufferHeight);
 
-        _client.SendPointerEvent(
-            (int)remotePos.X,
-            (int)remotePos.Y,
-            _buttonMask);
+        int rx = (int)remotePos.X, ry = (int)remotePos.Y;
 
+        // 去重：远程像素与按钮状态都没变就不重复发（缩放后大量本地移动会落到同一远程像素，
+        // 避免洪泛 socket，既更跟手也减少卡顿）
+        if (rx == _lastSentX && ry == _lastSentY && _buttonMask == _lastSentMask)
+        {
+            _lastMousePos = pos;
+            return;
+        }
+        _lastSentX = rx; _lastSentY = ry; _lastSentMask = _buttonMask;
+
+        _client.SendPointerEvent(rx, ry, _buttonMask);
         _lastMousePos = pos;
     }
 

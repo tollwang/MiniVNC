@@ -17,6 +17,12 @@ public static class SessionTests
 
     public static async Task RunAsync()
     {
+        await MainSessionAsync();
+        await UnknownMessageAsync();
+    }
+
+    private static async Task MainSessionAsync()
+    {
         Section("客户端完整会话（假 VNC 服务器）");
 
         var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -26,7 +32,9 @@ public static class SessionTests
 
         using var client = new VncClient();
         var resizes = new List<(int W, int H)>();
+        var cursors = new List<CursorUpdateEventArgs>();
         client.DesktopResized += (s, e) => resizes.Add((e.Width, e.Height));
+        client.CursorChanged += (s, e) => cursors.Add(e);
 
         var connecting = Task.Run(async () =>
         {
@@ -133,6 +141,82 @@ public static class SessionTests
             byte[] next = await ReadExactAsync(s, 10);
             Check("退回后每收到一帧继续请求增量更新", next[0] == 3 && next[1] == 1, Hex(next));
 
+            // ---- Cursor 伪编码(-239)：x/y 是热点，w/h 是光标尺寸，随后是像素 + 1bpp 透明掩码 ----
+            // 2x2 光标，掩码位=1 表示不透明（MSB 在前）：
+            //   行0 掩码 1000_0000 → 左像素可见、右像素透明
+            //   行1 掩码 0100_0000 → 左像素透明、右像素可见
+            var cur = new List<byte> { 0, 0, 0, 1 };
+            cur.AddRange(RectHeader(1, 1, 2, 2, -239));         // 热点 (1,1)
+            cur.AddRange(new byte[] { 0, 255, 0, 0 });          // (0,0) 红
+            cur.AddRange(new byte[] { 0, 0, 255, 0 });          // (1,0) 绿
+            cur.AddRange(new byte[] { 0, 0, 0, 255 });          // (0,1) 蓝
+            cur.AddRange(new byte[] { 0, 10, 20, 30 });         // (1,1) 自定义
+            cur.Add(0b1000_0000);
+            cur.Add(0b0100_0000);
+            await s.WriteAsync(cur.ToArray());
+            await Task.Delay(300);
+
+            Check("Cursor 伪编码触发一次 CursorChanged", cursors.Count == 1, $"收到 {cursors.Count} 次");
+            if (cursors.Count == 1)
+            {
+                var c = cursors[0];
+                byte[] p = c.Bgra;
+                Check("光标尺寸与热点正确",
+                    c.Width == 2 && c.Height == 2 && c.HotspotX == 1 && c.HotspotY == 1);
+                Check("光标像素转为 BGRA 且掩码位=0 的像素置为透明",
+                    p[0] == 0 && p[1] == 0 && p[2] == 255 && p[3] == 255 &&      // (0,0) 红，不透明
+                    p[7] == 0 &&                                                 // (1,0) 透明
+                    p[11] == 0 &&                                                // (0,1) 透明
+                    p[12] == 30 && p[13] == 20 && p[14] == 10 && p[15] == 255,   // (1,1) 不透明
+                    Hex(p));
+            }
+
+            // 完全相同的光标重复推送应被去重（否则会频繁重建 HCURSOR）
+            await s.WriteAsync(cur.ToArray());
+            await Task.Delay(300);
+            Check("重复推送相同光标被去重", cursors.Count == 1, $"收到 {cursors.Count} 次");
+
+            // 空光标 = 请求隐藏，应再触发一次事件（尺寸 0）
+            var hide = new List<byte> { 0, 0, 0, 1 };
+            hide.AddRange(RectHeader(0, 0, 0, 0, -239));
+            await s.WriteAsync(hide.ToArray());
+            await Task.Delay(300);
+            Check("空光标触发隐藏事件",
+                cursors.Count == 2 && cursors[^1].Width == 0 && cursors[^1].Height == 0);
+
+            // ---- CopyRect：在消息循环里内联处理（不走 IEncoding）----
+            var paint = new List<byte> { 0, 0, 0, 1 };
+            paint.AddRange(RectHeader(0, 0, 2, 1, 0));           // Raw 2x1 写到左上角
+            paint.AddRange(new byte[] { 0, 7, 8, 9, 0, 7, 8, 9 });
+            await s.WriteAsync(paint.ToArray());
+            await Task.Delay(200);
+
+            var copy = new List<byte> { 0, 0, 0, 1 };
+            copy.AddRange(RectHeader(100, 50, 2, 1, 1));         // CopyRect 目标 (100,50)
+            copy.AddRange(new byte[] { 0, 0, 0, 0 });            // 源坐标 (0,0)
+            await s.WriteAsync(copy.ToArray());
+            await Task.Delay(300);
+
+            byte[] afterCopy = Snapshot(client.Framebuffer!);
+            Check("CopyRect 在帧缓冲内正确搬移像素",
+                Pixel(afterCopy, NewW, 100, 50) == (9, 8, 7, 255) &&
+                Pixel(afterCopy, NewW, 101, 50) == (9, 8, 7, 255));
+
+            // ---- SetColorMapEntries：真彩色下忽略，但必须把数据读干净，否则整条流错位 ----
+            var cmap = new List<byte> { 1, 0, 0, 1, 0, 3 };      // 类型1, 填充, firstColor=1, numColors=3
+            cmap.AddRange(new byte[3 * 6]);                       // 3 个颜色 × R/G/B 各 2 字节
+            await s.WriteAsync(cmap.ToArray());
+
+            // 紧跟一帧正常更新：能正确解码就说明上面的跳过没有多读也没有少读
+            var afterCmap = new List<byte> { 0, 0, 0, 1 };
+            afterCmap.AddRange(RectHeader(5, 5, 1, 1, 0));
+            afterCmap.AddRange(new byte[] { 0, 1, 2, 3 });
+            await s.WriteAsync(afterCmap.ToArray());
+            await Task.Delay(300);
+
+            Check("忽略 SetColorMapEntries 后流未错位",
+                Pixel(Snapshot(client.Framebuffer!), NewW, 5, 5) == (3, 2, 1, 255));
+
             // ---- 服务器剪贴板 ----
             var cut = new List<byte> { 3, 0, 0, 0 };
             byte[] text = System.Text.Encoding.UTF8.GetBytes("来自 Mac 的文本");
@@ -150,6 +234,63 @@ public static class SessionTests
             sw.Stop();
             Check("空闲连接上 Disconnect 不再空等超时", sw.ElapsedMilliseconds < 500, $"{sw.ElapsedMilliseconds}ms");
             Check("断开后 IsConnected 为 false", !client.IsConnected);
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    /// <summary>
+    /// 未知的服务器消息类型必须导致断开：流已经无法继续解析，
+    /// 继续读下去只会把垃圾当协议数据，还不如断开触发重连。
+    /// </summary>
+    private static async Task UnknownMessageAsync()
+    {
+        Section("未知消息类型的处理");
+
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var accept = listener.AcceptTcpClientAsync();
+
+        using var client = new VncClient();
+        bool disconnected = false;
+        client.Disconnected += (s, e) => disconnected = true;
+
+        var connecting = Task.Run(async () =>
+        {
+            await client.ConnectAsync("127.0.0.1", port);
+            await client.AuthenticateAsync("", "");
+            await client.InitializeAsync();
+            client.StartUpdateLoop();
+        });
+
+        using var server = await accept;
+        var s = server.GetStream();
+
+        try
+        {
+            await s.WriteAsync(System.Text.Encoding.ASCII.GetBytes("RFB 003.008\n"));
+            await ReadExactAsync(s, 12);
+            await s.WriteAsync(new byte[] { 1, 1 });
+            await ReadExactAsync(s, 1);
+            await s.WriteAsync(new byte[] { 0, 0, 0, 0 });
+            await ReadExactAsync(s, 1);
+            await s.WriteAsync(ServerInit(320, 240, "X"));
+            await ReadExactAsync(s, 20);
+            byte[] h = await ReadExactAsync(s, 4);
+            await ReadExactAsync(s, Be16(h, 2) * 4);
+            await connecting;
+            await ReadExactAsync(s, 10);                 // 首个完整刷新请求
+
+            Check("连接已建立", client.IsConnected);
+
+            await s.WriteAsync(new byte[] { 99 });       // RFB 未定义的消息类型
+            await Task.Delay(500);
+
+            Check("收到未知消息类型 → 断开连接", !client.IsConnected);
+            Check("断开时触发 Disconnected 事件", disconnected);
         }
         finally
         {

@@ -25,6 +25,7 @@ public static class DecodingTests
         await Raw16Async();
         await HextileAsync();
         await ZrleAsync();
+        await ZrlePaletteRleAsync();
     }
 
     // ---- Raw ----
@@ -195,6 +196,61 @@ public static class DecodingTests
             // zlib 上下文跨矩形保持，但绝不能跨连接：ResetState 后必须能重新开始
             zrle.ResetState();
             Check("ResetState 清掉 zlib 上下文后可重新解码", true);
+        }
+        finally { dispose(); }
+    }
+
+    // ---- ZRLE Palette RLE（子编码 130+）：索引高位置 1 表示后跟游程长度 ----
+    private static async Task ZrlePaletteRleAsync()
+    {
+        var (client, server, dispose) = await OpenLoopbackAsync();
+        try
+        {
+            // 单个 64x64 瓦片 = 4096 像素，两段各 2048 的游程
+            var tile = new List<byte> { 130 };                     // 130 → 调色板 2 色
+            tile.AddRange(new byte[] { 11, 22, 33 });              // 调色板 0
+            tile.AddRange(new byte[] { 44, 55, 66 });              // 调色板 1
+
+            // 游程长度编码：run = 1 + Σ(连续的255) + 末字节。2048 = 1 + 255*8 + 7
+            void Run(int paletteIndex)
+            {
+                tile.Add((byte)(0x80 | paletteIndex));             // 高位=1 → 后跟游程长度
+                for (int i = 0; i < 8; i++) tile.Add(255);
+                tile.Add(7);
+            }
+            Run(0);
+            Run(1);
+
+            byte[] compressed;
+            using (var ms = new MemoryStream())
+            {
+                using (var z = new ZLibStream(ms, CompressionMode.Compress, leaveOpen: true))
+                {
+                    z.Write(tile.ToArray());
+                    z.Flush();
+                }
+                compressed = ms.ToArray();
+            }
+
+            var msg = new List<byte>
+            {
+                (byte)(compressed.Length >> 24), (byte)(compressed.Length >> 16),
+                (byte)(compressed.Length >> 8), (byte)compressed.Length
+            };
+            msg.AddRange(compressed);
+            _ = FeedInChunksAsync(server, msg.ToArray());
+
+            byte[] bgra = await new ZrleEncoding().DecodeAsync(
+                client, new FramebufferRect(0, 0, 64, 64, 16), Fmt32, default);
+
+            bool At(int linear, byte r, byte g, byte b)
+            {
+                int o = linear * 4;   // 64 宽的瓦片铺满整个矩形，线性下标即像素下标
+                return bgra[o] == b && bgra[o + 1] == g && bgra[o + 2] == r;
+            }
+
+            Check("ZRLE Palette-RLE 第 1 段游程", At(0, 11, 22, 33) && At(2047, 11, 22, 33));
+            Check("ZRLE Palette-RLE 第 2 段游程（边界精确）", At(2048, 44, 55, 66) && At(4095, 44, 55, 66));
         }
         finally { dispose(); }
     }

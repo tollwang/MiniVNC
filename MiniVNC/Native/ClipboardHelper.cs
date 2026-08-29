@@ -21,13 +21,17 @@ public static class ClipboardHelper
         => Run(() => Clipboard.ContainsText() ? Clipboard.GetText() : null);
 
     /// <summary>
-    /// 设置剪贴板文本（线程安全）
+    /// 设置剪贴板文本（线程安全）。
     /// </summary>
     /// <param name="text">要写入的文本内容</param>
-    public static void SetText(string text)
+    /// <returns>
+    /// 是否写入成功。剪贴板常被其它程序短暂占用（Office、浏览器、剪贴板管理器都会），
+    /// 此时写入会失败——调用方必须据此决定是否把内容记为"已同步"，否则会永久丢失这次同步。
+    /// </returns>
+    public static bool SetText(string text)
     {
-        if (string.IsNullOrEmpty(text)) return;
-        Run<object?>(() => { Clipboard.SetText(text); return null; });
+        if (string.IsNullOrEmpty(text)) return false;
+        return Run(() => { Clipboard.SetText(text); return (bool?)true; }) ?? false;
     }
 
     /// <summary>

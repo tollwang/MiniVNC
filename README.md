@@ -177,7 +177,7 @@ dotnet build -c Debug -p:SelfContained=false -p:PublishSingleFile=false -p:Runti
 dotnet run --project tests/MiniVNC.Tests
 ```
 
-96 项测试，全通过返回 0（CI 每次构建都会先跑一遍，失败即挡住发布）。测试项目刻意**不依赖 WPF**——
+108 项测试，全通过返回 0（CI 每次构建都会先跑一遍，失败即挡住发布）。测试项目刻意**不依赖 WPF**——
 它链接协议、网络、编解码、认证这些无 UI 依赖的源文件编译成纯 `net9.0` 控制台程序，
 所以在 macOS / Linux / Windows 上都能跑。同样零 NuGet 依赖，没有引入测试框架。
 

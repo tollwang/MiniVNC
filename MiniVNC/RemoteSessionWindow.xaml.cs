@@ -420,12 +420,14 @@ public partial class RemoteSessionWindow : Window
 
         Dispatcher.BeginInvoke(() =>
         {
-            // 远端剪贴板有新内容 → 写入本地剪贴板，并更新判重值（下次发送循环看到相同值便不会回发）
-            if (!string.IsNullOrEmpty(text) && text != _lastClipboard)
-            {
+            if (string.IsNullOrEmpty(text) || text == _lastClipboard) return;
+
+            // 判重值只在**写入成功后**才更新。剪贴板被别的程序占用时写入会失败，
+            // 若此时就记为"已同步"，用户粘出来的还是旧内容，而且再不会重试。
+            if (ClipboardHelper.SetText(text))
                 _lastClipboard = text;
-                ClipboardHelper.SetText(text);
-            }
+            else
+                UpdateStatus("剪贴板被其它程序占用，本次同步未生效");
         });
     }
 

@@ -7,12 +7,20 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
 
+    <!--
+      允许在非 Windows 主机（本项目常在 macOS 上开发）编译面向 Windows 的目标框架。
+      不设它时，macOS 上任何不带 -p:EnableWindowsTargeting=true 的编译都会报
+      NETSDK1100——VS Code 的 C# Dev Kit 正是这样直接编译 .sln 的，于是问题面板长期飘红。
+      写在这里对 Windows 与 CI 都是空操作（它只是"放行"，不改变任何产物）。
+    -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+
     <!-- 应用程序信息 -->
     <AssemblyName>MiniVNC</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyTitle>MiniVNC</AssemblyTitle>
     <!-- SDK 识别的属性是 Description（旧的 AssemblyDescription 会被忽略，导致 exe 文件说明为空） -->
-    <Description>轻量级VNC远程控制工具 - 专为Mac Mini优化</Description>
+    <Description>轻量级VNC远程控制工具 - 专为 macOS 屏幕共享优化</Description>
     <Company>MiniVNC</Company>
     <Product>MiniVNC</Product>
     <Authors>MiniVNC</Authors>

@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!--
+      主项目是 net9.0-windows(WPF)，直接引用它会让测试也只能在 Windows 上运行。
+      这里改为「链接源文件」：只编译不依赖 WPF 的那部分（协议/网络/编解码/认证），
+      目标框架用纯 net9.0，于是测试在 macOS/Linux/Windows 上都能跑。
+      代价是编译的是源码副本而非发布程序集——对这些纯逻辑文件是可接受的取舍。
+    -->
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>MiniVNC.Tests</AssemblyName>
+    <RootNamespace>MiniVNC.Tests</RootNamespace>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <!-- 开发机可能只装了更高版本的运行时；允许向上滚动，省得为跑测试单独装 9.0 -->
+    <RollForward>Major</RollForward>
+    <!-- 与主项目保持一致：源文件里用到 Stream/File 等但未逐一 using -->
+    <NoWarn>$(NoWarn)</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Using Include="System.IO" />
+  </ItemGroup>
+
+  <!-- 测试自身 -->
+  <ItemGroup>
+    <Compile Include="*.cs" />
+  </ItemGroup>
+
+  <!--
+    被测源文件（均不依赖 WPF）。
+    有意排除：Core/ConnectionSettings.cs（DPAPI 仅 Windows）、Input/*（依赖 System.Windows.Input）、
+    Controls/*、Native/*、*.xaml.cs。
+  -->
+  <ItemGroup>
+    <Compile Include="../../MiniVNC/Core/VncClient.cs" Link="src/Core/VncClient.cs" />
+    <Compile Include="../../MiniVNC/Core/HostAddress.cs" Link="src/Core/HostAddress.cs" />
+    <Compile Include="../../MiniVNC/Protocol/*.cs" Link="src/Protocol/%(Filename)%(Extension)" />
+    <Compile Include="../../MiniVNC/Encodings/*.cs" Link="src/Encodings/%(Filename)%(Extension)" />
+    <Compile Include="../../MiniVNC/Network/*.cs" Link="src/Network/%(Filename)%(Extension)" />
+    <Compile Include="../../MiniVNC/Utils/*.cs" Link="src/Utils/%(Filename)%(Extension)" />
+  </ItemGroup>
+
+</Project>

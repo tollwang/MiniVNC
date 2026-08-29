@@ -23,9 +23,13 @@ jobs:
         with:
           dotnet-version: '9.0.x'
 
-      # 自包含单文件编译。
-      # 关键:命令行覆盖了 csproj 里的 PublishAot=true ——
-      # WPF 在 .NET 9 不支持 Native AOT,这里强制关闭,改用单文件自包含。
+      # 测试套件是纯 net9.0(不依赖 WPF),失败会直接让整个工作流红掉,
+      # 从而挡住有问题的发布。
+      - name: 运行测试
+        shell: bash
+        run: dotnet run --project tests/MiniVNC.Tests/MiniVNC.Tests.csproj -c Release
+
+      # 自包含单文件编译。WPF 不支持 Native AOT,故采用单文件 + 自包含。
       - name: 编译(自包含单文件)
         shell: bash
         run: |

@@ -171,6 +171,27 @@ dotnet build -c Debug -p:SelfContained=false -p:PublishSingleFile=false -p:Runti
 
 推 `v*` 标签会触发 GitHub Actions 在 Windows 上构建并自动发布 Release。
 
+### 测试
+
+```bash
+dotnet run --project tests/MiniVNC.Tests
+```
+
+96 项测试，全通过返回 0（CI 每次构建都会先跑一遍，失败即挡住发布）。测试项目刻意**不依赖 WPF**——
+它链接协议、网络、编解码、认证这些无 UI 依赖的源文件编译成纯 `net9.0` 控制台程序，
+所以在 macOS / Linux / Windows 上都能跑。同样零 NuGet 依赖，没有引入测试框架。
+
+覆盖范围：
+
+- **客户端报文线格式**——逐字节比对 RFB 规范（这些消息为了减少 TCP 包数是拼装后一次写出的，字节布局必须钉死）
+- **读取分帧**——数据按小分片到达时，64KB 读缓冲与暂存区复用不能破坏"精确读 N 字节"
+- **三种编码解码**——Raw（32/16bpp）、Hextile 四种瓦片形态、ZRLE 四种子编码，逐像素比对
+- **帧缓冲裁剪**——越界矩形必须裁剪而非抛异常（抛异常会断开整条会话）
+- **认证算法**——DES 的密码截断与分块；ARD 做完整的端到端验证：测试扮演服务器完成 DH 交换后
+  把客户端密文解开，检查用户名和密码原样还原
+- **完整会话**——一个假 VNC 服务器跑通握手→认证→初始化→消息循环，验证连续更新的启用与停用回退、
+  DesktopSize 重建帧缓冲、剪贴板接收，以及断开耗时（曾经会空等满 2 秒）
+
 ---
 
 ## 项目结构
@@ -208,6 +229,8 @@ MiniVNC/
 │   └── DesEncryptor.cs                 # VNC 密码认证的 DES（位序反转）
 └── Native/
     └── ClipboardHelper.cs              # 剪贴板读写（STA 处理）
+
+tests/MiniVNC.Tests/                    # 测试套件（纯 net9.0，链接被测源文件，零依赖）
 ```
 
 ## 技术规格

@@ -114,7 +114,7 @@ public readonly record struct PixelFormat(
     /// <param name="data">源字节数组。</param>
     /// <param name="offset">起始偏移。</param>
     /// <returns>组装后的像素数值（按颜色通道位移/掩码解释）。</returns>
-    public uint ReadPixel(byte[] data, int offset)
+    public uint ReadPixel(ReadOnlySpan<byte> data, int offset)
     {
         return BytesPerPixel switch
         {

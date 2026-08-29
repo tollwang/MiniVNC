@@ -109,8 +109,9 @@ public sealed class HextileEncoding : IEncoding
     /// </summary>
     private static async Task<uint> ReadPixelAsync(VncStream stream, PixelFormat format, CancellationToken ct)
     {
-        byte[] bytes = await stream.ReadExactlyAsync(format.BytesPerPixel, ct);
-        return format.ReadPixel(bytes, 0);
+        // 走暂存区：一个 Hextile 矩形里这种读取有成千上万次，逐次分配数组纯属浪费
+        ReadOnlyMemory<byte> bytes = await stream.ReadSmallAsync(format.BytesPerPixel, ct);
+        return format.ReadPixel(bytes.Span, 0);
     }
 
     /// <summary>

@@ -52,38 +52,53 @@ public sealed class Framebuffer
     /// <param name="w">区域宽度。</param>
     /// <param name="h">区域高度。</param>
     /// <param name="bgra">BGRA32 源数据，长度至少为 w*h*4。</param>
-    /// <exception cref="ArgumentOutOfRangeException">区域超出帧缓冲范围。</exception>
     /// <exception cref="ArgumentException">源数据长度不足。</exception>
+    /// <remarks>
+    /// 超出帧缓冲边界的部分会被裁掉而不是抛异常：矩形的宽高已用于解码、流并未错位，
+    /// 错的只是落点（服务器改分辨率等场景）。为这种情况断开整条会话代价过大，画不下就不画。
+    /// </remarks>
     public void UpdateRectBgra32(int x, int y, int w, int h, byte[] bgra)
     {
-        if (x < 0 || y < 0 || w < 0 || h < 0 || x + w > Width || y + h > Height)
-            throw new ArgumentOutOfRangeException(nameof(bgra), "矩形超出帧缓冲范围");
+        if (w < 0 || h < 0) return;
 
         int needed = w * h * BytesPerPixel;
         if (bgra.Length < needed)
             throw new ArgumentException($"BGRA数据不足: 需要{needed}字节, 实际{bgra.Length}字节", nameof(bgra));
 
-        int dstStride = Width * BytesPerPixel;
         int srcStride = w * BytesPerPixel;
+
+        // 裁剪到帧缓冲范围（srcStride 保持按原始宽度计算，源数据的行距不变）
+        int srcX = 0, srcY = 0;
+        if (x < 0) { srcX = -x; w += x; x = 0; }
+        if (y < 0) { srcY = -y; h += y; y = 0; }
+        if (x + w > Width) w = Width - x;
+        if (y + h > Height) h = Height - y;
+        if (w <= 0 || h <= 0) return;
+
+        int rowBytes = w * BytesPerPixel;
 
         lock (_sync)
         {
             for (int row = 0; row < h; row++)
             {
-                Array.Copy(bgra, row * srcStride, _pixels, ((y + row) * Width + x) * BytesPerPixel, srcStride);
+                Array.Copy(bgra, (srcY + row) * srcStride + srcX * BytesPerPixel,
+                           _pixels, ((y + row) * Width + x) * BytesPerPixel, rowBytes);
             }
         }
     }
 
     /// <summary>
     /// 从帧缓冲已有区域复制像素到目标区域（CopyRect 编码使用）。
+    /// 超边界时同样按 <see cref="UpdateRectBgra32"/> 的原则裁剪（源与目标一起收缩），不抛异常断线。
     /// </summary>
     public void CopyRect(int srcX, int srcY, int dstX, int dstY, int w, int h)
     {
-        if (srcX < 0 || srcY < 0 || dstX < 0 || dstY < 0 || w < 0 || h < 0)
-            throw new ArgumentOutOfRangeException(nameof(w), "坐标和尺寸必须为非负");
-        if (srcX + w > Width || srcY + h > Height || dstX + w > Width || dstY + h > Height)
-            throw new ArgumentOutOfRangeException(nameof(w), "矩形超出帧缓冲范围");
+        if (srcX < 0 || srcY < 0 || dstX < 0 || dstY < 0 || w < 0 || h < 0) return;
+
+        // 源和目标都要落在范围内：取二者允许的最小宽高
+        w = Math.Min(w, Math.Min(Width - srcX, Width - dstX));
+        h = Math.Min(h, Math.Min(Height - srcY, Height - dstY));
+        if (w <= 0 || h <= 0) return;
 
         int stride = w * BytesPerPixel;
 

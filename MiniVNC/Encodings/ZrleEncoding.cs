@@ -267,6 +267,12 @@ public sealed class ZrleEncoding : IEncoding, IDisposable
         }
     }
 
+    /// <summary>
+    /// 丢弃持久化的 zlib 上下文。zlib 流是整条连接共享的，若沿用到下一条连接会用旧字典解新数据，
+    /// 直接花屏或抛"不支持的子编码"。下次解码时按需重建。
+    /// </summary>
+    public void ResetState() => Dispose();
+
     /// <summary>释放持久化的解压流。</summary>
     public void Dispose()
     {

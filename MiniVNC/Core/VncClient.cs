@@ -280,6 +280,11 @@ public sealed class VncClient : IDisposable
 
         StatusChanged?.Invoke(this, "正在初始化会话...");
 
+        // 清掉上一条连接残留的解码状态（ZRLE 的 zlib 上下文跨矩形保持，但绝不能跨连接）
+        foreach (var encoding in _encodings.Values)
+            encoding.ResetState();
+        _continuousUpdates = false;
+
         // 共享桌面
         _protocol.WriteClientInit(true);
 
@@ -422,6 +427,11 @@ public sealed class VncClient : IDisposable
         }
         catch (OperationCanceledException) { /* 正常取消 */ }
         catch (ChannelClosedException) { /* 正常关闭 */ }
+        catch (Exception) when (ct.IsCancellationRequested)
+        {
+            // 主动断开时流已先被关闭（为的是唤醒消息循环的阻塞读），此刻队列里残留的写
+            // 抛出属于正常收尾，不该报成错误。
+        }
         catch (Exception ex)
         {
             ErrorOccurred?.Invoke(this, ex);
@@ -443,13 +453,16 @@ public sealed class VncClient : IDisposable
 
         _writeQueue?.Writer.TryComplete(); // 结束写线程的 ReadAllAsync
 
+        // 必须先关流再等待：socket 的异步读一旦挂起就不响应 CancellationToken，
+        // 空闲连接上消息循环会一直阻塞在 ReadAsync 里。先前是"先 Wait 后关流"，
+        // 于是每次断开/重连/关窗都要白等满 2 秒超时，表现为界面冻结。
+        try { _stream?.Dispose(); }
+        catch (Exception) { }
+
         try { _messageLoopTask?.Wait(TimeSpan.FromSeconds(2)); }
         catch (AggregateException) { }
         try { _writerTask?.Wait(TimeSpan.FromSeconds(2)); }
         catch (AggregateException) { }
-
-        try { _stream?.Dispose(); }
-        catch (Exception) { }
 
         _stream = null;
         _protocol = null;
@@ -592,12 +605,21 @@ public sealed class VncClient : IDisposable
                         break;
 
                     case ServerMessageType.EndOfContinuousUpdates:
-                        // 服务器支持连续更新：开启后由服务器主动推帧，客户端不再逐帧请求（省往返延迟）。
                         if (!_continuousUpdates)
                         {
+                            // 首次收到 = 服务器声明支持。开启后由服务器主动推帧，客户端不再逐帧请求（省往返延迟）。
                             _continuousUpdates = true;
                             EnableContinuousUpdates(0, 0, FramebufferWidth, FramebufferHeight);
                             StatusChanged?.Invoke(this, "已启用连续更新（更跟手）");
+                        }
+                        else
+                        {
+                            // 再次收到 = 服务器已停用连续更新（此消息也用作停用的边界标记）。
+                            // 必须退回请求-应答循环并立刻补发一次请求，否则双方互等：
+                            // 服务器不再主动推、客户端也不再请求 → 画面永久冻结而 TCP 仍存活（keepalive 也不会触发重连）。
+                            _continuousUpdates = false;
+                            RequestFramebufferUpdate(true, 0, 0, FramebufferWidth, FramebufferHeight);
+                            StatusChanged?.Invoke(this, "服务器已停用连续更新，回退到逐帧请求");
                         }
                         break;
 

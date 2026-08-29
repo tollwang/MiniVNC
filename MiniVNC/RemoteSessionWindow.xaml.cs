@@ -453,6 +453,11 @@ public partial class RemoteSessionWindow : Window
         {
             if (_userClosing || !_clipboardSyncEnabled || !_client.IsConnected) return;
 
+            // 窗口没被激活时不去碰剪贴板：Clipboard.GetText 是 OLE 调用，别的程序占用剪贴板时
+            // 可能阻塞数百毫秒，而这里跑在渲染所在的 UI 线程上——远程画面会跟着一顿一顿。
+            // 用户切回本窗口后 500ms 内就会轮到下一次 tick，本地复制的内容照样发得出去。
+            if (!IsActive) return;
+
             try
             {
                 var text = ClipboardHelper.GetText();

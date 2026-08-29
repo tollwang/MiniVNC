@@ -23,4 +23,10 @@ public interface IEncoding
     /// <param name="ct">取消令牌。</param>
     /// <returns>BGRA32 像素数据。</returns>
     Task<byte[]> DecodeAsync(VncStream stream, FramebufferRect rect, PixelFormat format, CancellationToken ct);
+
+    /// <summary>
+    /// 丢弃跨矩形保持的解码状态（如 ZRLE 的持久 zlib 上下文），在每条新连接开始前调用。
+    /// 无状态的解码器无需实现。
+    /// </summary>
+    void ResetState() { }
 }

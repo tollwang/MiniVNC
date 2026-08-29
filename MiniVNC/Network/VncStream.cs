@@ -9,9 +9,29 @@ namespace MiniVNC.Network;
 /// </summary>
 public class VncStream : IDisposable
 {
+    /// <summary>
+    /// 读缓冲大小。RFB 解析是极细粒度的（Hextile 每个瓦片/子矩形都要读 1~4 字节），
+    /// 而 <see cref="NetworkStream"/> 无缓冲——每次读都是一次 recv 系统调用。
+    /// 64KB 读缓冲把一帧的上万次 recv 压到几十次。
+    /// </summary>
+    private const int ReadBufferSize = 64 * 1024;
+
     private readonly TcpClient _tcpClient;
     private NetworkStream _stream;
+
+    /// <summary>
+    /// 读取专用的带缓冲包装。写仍直接走 <see cref="_stream"/>：
+    /// 收/发是 socket 上互相独立的两个方向，缓冲读不影响写的即时性。
+    /// </summary>
+    private Stream _readStream;
     private bool _disposed;
+
+    /// <summary>
+    /// 小读取（消息类型、坐标、单个像素等）共用的暂存区，避免每次读几个字节都新分配一个数组
+    /// ——一帧里这种读取有上万次。仅供消息循环线程使用：RFB 的读取本就是单线程串行的，
+    /// 且返回值必须在下一次读取前消费掉。
+    /// </summary>
+    private readonly byte[] _scratch = new byte[8];
 
     /// <summary>
     /// 初始化 <see cref="VncStream"/> 实例，不立即建立连接。
@@ -21,6 +41,7 @@ public class VncStream : IDisposable
     {
         _tcpClient = new TcpClient();
         _stream = null!;
+        _readStream = null!;
     }
 
     /// <summary>
@@ -35,6 +56,7 @@ public class VncStream : IDisposable
         _tcpClient.Connect(host, port);
         ConfigureSocket();
         _stream = _tcpClient.GetStream();
+        _readStream = new BufferedStream(_stream, ReadBufferSize);
     }
 
     /// <summary>
@@ -50,6 +72,7 @@ public class VncStream : IDisposable
         await _tcpClient.ConnectAsync(host, port, ct);
         ConfigureSocket();
         _stream = _tcpClient.GetStream();
+        _readStream = new BufferedStream(_stream, ReadBufferSize);
     }
 
     /// <summary>
@@ -73,7 +96,8 @@ public class VncStream : IDisposable
     }
 
     /// <summary>
-    /// 获取底层的 <see cref="NetworkStream"/> 实例。
+    /// 获取底层的 <see cref="NetworkStream"/> 实例（未经读缓冲，仅供写入/诊断使用；
+    /// 读取一律走 <see cref="ReadExactlyAsync"/> 等方法，否则会与读缓冲里的数据错位）。
     /// </summary>
     public Stream BaseStream => _stream;
 
@@ -98,7 +122,7 @@ public class VncStream : IDisposable
     /// <param name="offset">缓冲区中的起始偏移量。</param>
     /// <param name="count">要读取的最大字节数。</param>
     /// <returns>实际读取到的字节数。</returns>
-    public int Read(byte[] buffer, int offset, int count) => _stream.Read(buffer, offset, count);
+    public int Read(byte[] buffer, int offset, int count) => _readStream.Read(buffer, offset, count);
 
     /// <summary>
     /// 从流中精确读取指定数量的字节，循环读取直到缓冲区填满。
@@ -112,7 +136,7 @@ public class VncStream : IDisposable
         int totalRead = 0;
         while (totalRead < count)
         {
-            int read = _stream.Read(result, totalRead, count - totalRead);
+            int read = _readStream.Read(result, totalRead, count - totalRead);
             if (read == 0)
                 throw new IOException($"Expected {count} bytes but only received {totalRead} before stream closed.");
             totalRead += read;
@@ -151,7 +175,7 @@ public class VncStream : IDisposable
     /// <exception cref="IOException">流已关闭时抛出。</exception>
     public byte ReadByte()
     {
-        int value = _stream.ReadByte();
+        int value = _readStream.ReadByte();
         if (value == -1)
             throw new IOException("End of stream reached when reading a byte.");
         return (byte)value;
@@ -197,8 +221,33 @@ public class VncStream : IDisposable
     /// <exception cref="IOException">流在读取完成前关闭时抛出。</exception>
     public async Task<byte> ReadByteAsync(CancellationToken ct = default)
     {
-        byte[] b = await ReadExactlyAsync(1, ct);
-        return b[0];
+        await FillScratchAsync(1, ct);
+        return _scratch[0];
+    }
+
+    /// <summary>
+    /// 精确读取 <paramref name="count"/>（≤8）字节到内部暂存区，返回其只读视图。
+    /// 视图必须在下一次读取之前用掉——用于像素等"读完立刻转换"的小对象，省掉逐次分配。
+    /// </summary>
+    public async Task<ReadOnlyMemory<byte>> ReadSmallAsync(int count, CancellationToken ct = default)
+    {
+        if (count < 0 || count > _scratch.Length)
+            throw new ArgumentOutOfRangeException(nameof(count), $"小读取长度须在 0..{_scratch.Length} 之间");
+        await FillScratchAsync(count, ct);
+        return _scratch.AsMemory(0, count);
+    }
+
+    /// <summary>把 count 字节精确读入暂存区。</summary>
+    private async Task FillScratchAsync(int count, CancellationToken ct)
+    {
+        int totalRead = 0;
+        while (totalRead < count)
+        {
+            int read = await _readStream.ReadAsync(_scratch.AsMemory(totalRead, count - totalRead), ct);
+            if (read == 0)
+                throw new IOException($"Expected {count} bytes but only received {totalRead} before stream closed.");
+            totalRead += read;
+        }
     }
 
     /// <summary>
@@ -215,7 +264,7 @@ public class VncStream : IDisposable
         int totalRead = 0;
         while (totalRead < count)
         {
-            int read = await _stream.ReadAsync(result.AsMemory(totalRead, count - totalRead), ct);
+            int read = await _readStream.ReadAsync(result.AsMemory(totalRead, count - totalRead), ct);
             if (read == 0)
                 throw new IOException($"Expected {count} bytes but only received {totalRead} before stream closed.");
             totalRead += read;
@@ -230,8 +279,8 @@ public class VncStream : IDisposable
     /// <returns>以大端序解析的 <see cref="ushort"/> 值。</returns>
     public async Task<ushort> ReadUInt16Async(CancellationToken ct = default)
     {
-        byte[] b = await ReadExactlyAsync(2, ct);
-        return (ushort)((b[0] << 8) | b[1]);
+        await FillScratchAsync(2, ct);
+        return (ushort)((_scratch[0] << 8) | _scratch[1]);
     }
 
     /// <summary>
@@ -241,8 +290,8 @@ public class VncStream : IDisposable
     /// <returns>以大端序解析的 <see cref="uint"/> 值。</returns>
     public async Task<uint> ReadUInt32Async(CancellationToken ct = default)
     {
-        byte[] b = await ReadExactlyAsync(4, ct);
-        return ((uint)b[0] << 24) | ((uint)b[1] << 16) | ((uint)b[2] << 8) | b[3];
+        await FillScratchAsync(4, ct);
+        return ((uint)_scratch[0] << 24) | ((uint)_scratch[1] << 16) | ((uint)_scratch[2] << 8) | _scratch[3];
     }
 
     #endregion
@@ -258,6 +307,7 @@ public class VncStream : IDisposable
         _disposed = true;
         // _stream 在连接成功前为 null（连接被拒/超时/取消的常见错误路径）；逐个容错关闭，
         // 避免抛 NullReferenceException 掩盖真实连接错误并泄漏 TcpClient。
+        try { _readStream?.Dispose(); } catch { }
         try { _stream?.Close(); } catch { }
         try { _tcpClient.Close(); } catch { }
     }

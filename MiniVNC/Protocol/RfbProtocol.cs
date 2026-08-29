@@ -187,42 +187,48 @@ public sealed class RfbProtocol : IDisposable
 
     #region 客户端消息发送
 
+    // 客户端消息一律先在内存里拼装完整报文、再一次 Write 发出。
+    // socket 开了 NoDelay（关 Nagle），逐字段写会让一条 6 字节的鼠标消息变成 4 个 TCP 包
+    // ——4 倍的系统调用与包数，高频鼠标移动时尤其浪费。
+
     /// <summary>发送 SetPixelFormat 消息。</summary>
     public void WriteSetPixelFormat(PixelFormat format)
     {
-        _stream.WriteByte((byte)ClientMessageType.SetPixelFormat);
-        _stream.Write(new byte[3]); // 填充
-        _stream.Write(format.ToByteArray());
+        byte[] msg = new byte[20];
+        msg[0] = (byte)ClientMessageType.SetPixelFormat;
+        // msg[1..3] 填充，保持 0
+        format.ToByteArray().CopyTo(msg, 4);
+        _stream.Write(msg);
     }
 
     /// <summary>发送 SetEncodings 消息（按偏好顺序）。</summary>
     public void WriteSetEncodings(int[] encodings)
     {
-        _stream.WriteByte((byte)ClientMessageType.SetEncodings);
-        _stream.WriteByte(0); // 填充
-        _stream.WriteUInt16((ushort)encodings.Length);
-        foreach (int encoding in encodings)
-            _stream.WriteUInt32((uint)encoding);
+        byte[] msg = new byte[4 + encodings.Length * 4];
+        msg[0] = (byte)ClientMessageType.SetEncodings;
+        // msg[1] 填充
+        WriteU16(msg, 2, (ushort)encodings.Length);
+        for (int i = 0; i < encodings.Length; i++)
+            WriteU32(msg, 4 + i * 4, (uint)encodings[i]);
+        _stream.Write(msg);
     }
 
     /// <summary>发送 FramebufferUpdateRequest 消息。</summary>
     public void WriteFramebufferUpdateRequest(bool incremental, ushort x, ushort y, ushort width, ushort height)
     {
-        _stream.WriteByte((byte)ClientMessageType.FramebufferUpdateRequest);
-        _stream.WriteByte(incremental ? (byte)1 : (byte)0);
-        _stream.WriteUInt16(x);
-        _stream.WriteUInt16(y);
-        _stream.WriteUInt16(width);
-        _stream.WriteUInt16(height);
+        _stream.Write(BuildRectMessage(
+            (byte)ClientMessageType.FramebufferUpdateRequest, incremental ? (byte)1 : (byte)0, x, y, width, height));
     }
 
     /// <summary>发送 KeyEvent 消息。</summary>
     public void WriteKeyEvent(bool pressed, uint keysym)
     {
-        _stream.WriteByte((byte)ClientMessageType.KeyEvent);
-        _stream.WriteByte(pressed ? (byte)1 : (byte)0);
-        _stream.WriteUInt16(0); // 填充
-        _stream.WriteUInt32(keysym);
+        byte[] msg = new byte[8];
+        msg[0] = (byte)ClientMessageType.KeyEvent;
+        msg[1] = pressed ? (byte)1 : (byte)0;
+        // msg[2..3] 填充
+        WriteU32(msg, 4, keysym);
+        _stream.Write(msg);
     }
 
     /// <summary>
@@ -231,21 +237,46 @@ public sealed class RfbProtocol : IDisposable
     /// </summary>
     public void WriteEnableContinuousUpdates(bool enable, ushort x, ushort y, ushort width, ushort height)
     {
-        _stream.WriteByte((byte)ClientMessageType.EnableContinuousUpdates);
-        _stream.WriteByte(enable ? (byte)1 : (byte)0);
-        _stream.WriteUInt16(x);
-        _stream.WriteUInt16(y);
-        _stream.WriteUInt16(width);
-        _stream.WriteUInt16(height);
+        _stream.Write(BuildRectMessage(
+            (byte)ClientMessageType.EnableContinuousUpdates, enable ? (byte)1 : (byte)0, x, y, width, height));
     }
 
     /// <summary>发送 PointerEvent 消息。</summary>
     public void WritePointerEvent(byte buttonMask, ushort x, ushort y)
     {
-        _stream.WriteByte((byte)ClientMessageType.PointerEvent);
-        _stream.WriteByte(buttonMask);
-        _stream.WriteUInt16(x);
-        _stream.WriteUInt16(y);
+        byte[] msg = new byte[6];
+        msg[0] = (byte)ClientMessageType.PointerEvent;
+        msg[1] = buttonMask;
+        WriteU16(msg, 2, x);
+        WriteU16(msg, 4, y);
+        _stream.Write(msg);
+    }
+
+    /// <summary>拼装"类型 + 1字节标志 + x/y/w/h"这一族 10 字节报文。</summary>
+    private static byte[] BuildRectMessage(byte type, byte flag, ushort x, ushort y, ushort width, ushort height)
+    {
+        byte[] msg = new byte[10];
+        msg[0] = type;
+        msg[1] = flag;
+        WriteU16(msg, 2, x);
+        WriteU16(msg, 4, y);
+        WriteU16(msg, 6, width);
+        WriteU16(msg, 8, height);
+        return msg;
+    }
+
+    private static void WriteU16(byte[] buf, int offset, ushort value)
+    {
+        buf[offset] = (byte)(value >> 8);
+        buf[offset + 1] = (byte)value;
+    }
+
+    private static void WriteU32(byte[] buf, int offset, uint value)
+    {
+        buf[offset] = (byte)(value >> 24);
+        buf[offset + 1] = (byte)(value >> 16);
+        buf[offset + 2] = (byte)(value >> 8);
+        buf[offset + 3] = (byte)value;
     }
 
     /// <summary>
@@ -257,10 +288,12 @@ public sealed class RfbProtocol : IDisposable
     public void WriteCutText(string text)
     {
         byte[] bytes = EncodeCutText(text ?? string.Empty);
-        _stream.WriteByte((byte)ClientMessageType.ClientCutText);
-        _stream.Write(new byte[3]); // 填充
-        _stream.WriteUInt32((uint)bytes.Length);
-        _stream.Write(bytes);
+        byte[] msg = new byte[8 + bytes.Length];
+        msg[0] = (byte)ClientMessageType.ClientCutText;
+        // msg[1..3] 填充
+        WriteU32(msg, 4, (uint)bytes.Length);
+        bytes.CopyTo(msg, 8);
+        _stream.Write(msg);
     }
 
     /// <summary>严格 UTF-8（遇非法字节抛异常），用于"先试 UTF-8 再回退 Latin-1"的剪贴板解码。</summary>

@@ -174,15 +174,14 @@ public partial class MainWindow : Window
     /// </summary>
     private void BtnQuickConnect_Click(object sender, RoutedEventArgs e)
     {
-        var host = TbQuickHost.Text.Trim();
-        if (string.IsNullOrEmpty(host))
+        if (string.IsNullOrWhiteSpace(TbQuickHost.Text))
         {
             MessageBox.Show("请输入主机地址", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        // 验证IP地址或主机名格式
-        if (!IsValidHost(host))
+        // 允许把端口写在主机里（mac.example.com:5901 / [::1]:5901），拆分后再校验
+        if (!HostAddress.TryParse(TbQuickHost.Text, out var host, out var inlinePort) || !HostAddress.IsValidHost(host))
         {
             MessageBox.Show("请输入有效的主机地址或IP", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
@@ -190,7 +189,15 @@ public partial class MainWindow : Window
 
         if (!int.TryParse(TbQuickPort.Text, out int port) || port <= 0 || port > 65535)
         {
-            port = 5900;
+            port = HostAddress.DefaultPort;
+        }
+
+        // 主机里显式写的端口优先，并回写到界面上让用户看到拆分结果
+        if (inlinePort is int p)
+        {
+            port = p;
+            TbQuickHost.Text = host;
+            TbQuickPort.Text = p.ToString();
         }
 
         var settings = new ConnectionSettings
@@ -203,19 +210,6 @@ public partial class MainWindow : Window
         };
 
         StartSession(settings);
-    }
-
-    /// <summary>
-    /// 验证主机地址或IP格式
-    /// </summary>
-    /// <param name="host">主机地址</param>
-    /// <returns>是否有效</returns>
-    private static bool IsValidHost(string host)
-    {
-        // 允许IP地址或主机名
-        if (System.Net.IPAddress.TryParse(host, out _)) return true;
-        // 简单的主机名验证
-        return host.Length > 0 && host.Length < 256 && !host.Contains(' ');
     }
 
     /// <summary>
@@ -503,10 +497,24 @@ public class ConnectionDialog : Window
             MessageBox.Show("请输入主机地址", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
+        // 与快速连接一致：支持 host:port 合写，拆分后再校验
+        if (!HostAddress.TryParse(_tbHost?.Text, out var host, out var inlinePort) || !HostAddress.IsValidHost(host))
+        {
+            MessageBox.Show("请输入有效的主机地址或IP", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        int port = int.TryParse(_tbPort?.Text, out var p) && p > 0 && p <= 65535 ? p : HostAddress.DefaultPort;
+        if (inlinePort is int ip)
+        {
+            port = ip;
+            if (_tbHost != null) _tbHost.Text = host;
+            if (_tbPort != null) _tbPort.Text = ip.ToString();
+        }
 
         _settings.Name = _tbName?.Text?.Trim() ?? "";
-        _settings.Host = _tbHost?.Text?.Trim() ?? "";
-        _settings.Port = int.TryParse(_tbPort?.Text, out var p) ? p : 5900;
+        _settings.Host = host;
+        _settings.Port = port;
         _settings.Username = _tbUser?.Text?.Trim() ?? "";
         _settings.Password = _pbPassword?.Password;
         _settings.ColorDepth = (_cbColorDepth?.SelectedItem as ComboBoxItem)?.Tag is int depth ? depth : 32;

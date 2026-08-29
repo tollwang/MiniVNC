@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Net.Sockets;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -219,9 +220,23 @@ public partial class RemoteSessionWindow : Window
     /// <summary>
     /// 是否为“连接级瞬时错误”（被重置/无法读取/Socket 级）。
     /// 不含认证失败(InvalidOperationException)与超时(OperationCanceledException)，这些不应重试。
+    /// 也排除 DNS 解析失败等确定性错误：主机名拼错时重试 5 次只会让用户白等 ~30 秒。
     /// </summary>
-    private static bool IsTransientConnectError(Exception ex)
-        => ex is System.Net.Sockets.SocketException || ex is System.IO.IOException;
+    private static bool IsTransientConnectError(Exception ex) => ex switch
+    {
+        SocketException se => !IsPermanentSocketError(se.SocketErrorCode),
+        System.IO.IOException => true,
+        _ => false
+    };
+
+    /// <summary>
+    /// 该 socket 错误是否为“重试也不会变”的确定性错误（主机名/地址本身有问题）。
+    /// </summary>
+    private static bool IsPermanentSocketError(SocketError error) => error
+        is SocketError.HostNotFound          // DNS 无此主机（域名拼错）
+        or SocketError.NoData                // 域名存在但无 A/AAAA 记录
+        or SocketError.AddressFamilyNotSupported
+        or SocketError.AddressNotAvailable;
 
     /// <summary>启动状态/剪贴板定时器（只启动一次，重连时不重复创建）。</summary>
     private void StartTimersOnce()

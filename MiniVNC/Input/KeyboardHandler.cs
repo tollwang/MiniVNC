@@ -16,13 +16,15 @@ public static class KeyboardHandler
     /// <returns>X11 Keysym值</returns>
     public static uint KeyToKeysym(Key key)
     {
-        // 字母键（A-Z），根据Shift状态返回大小写
+        // 字母键（A-Z）：大小写由 Shift 与 CapsLock 共同决定（异或——大写锁定时按住 Shift 反而出小写）。
+        // 只影响字母；数字与标点不受 CapsLock 影响。
         if (key >= Key.A && key <= Key.Z)
         {
-            bool isShiftPressed = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift);
-            return isShiftPressed
-                ? (uint)(key - Key.A + 'A')   // Shift按下返回大写
-                : (uint)(key - Key.A + 'a');  // 否则返回小写
+            bool shift = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift);
+            bool capsLock = Keyboard.IsKeyToggled(Key.CapsLock);
+            return shift ^ capsLock
+                ? (uint)(key - Key.A + 'A')
+                : (uint)(key - Key.A + 'a');
         }
 
         // 数字键（0-9），根据Shift状态返回对应符号

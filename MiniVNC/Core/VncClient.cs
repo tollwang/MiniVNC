@@ -57,6 +57,24 @@ public sealed class CursorUpdateEventArgs : EventArgs
 }
 
 /// <summary>
+/// 远端桌面尺寸变化事件参数（来自 DesktopSize 伪编码 -223）。
+/// </summary>
+public sealed class DesktopResizeEventArgs : EventArgs
+{
+    /// <summary>新的帧缓冲宽度（像素）。</summary>
+    public int Width { get; }
+    /// <summary>新的帧缓冲高度（像素）。</summary>
+    public int Height { get; }
+
+    /// <summary>创建桌面尺寸变化事件参数。</summary>
+    public DesktopResizeEventArgs(int width, int height)
+    {
+        Width = width;
+        Height = height;
+    }
+}
+
+/// <summary>
 /// VNC客户端主控制器 - 管理连接、认证与消息循环，封装完整的 RFB 协议交互。
 /// </summary>
 public sealed class VncClient : IDisposable
@@ -80,6 +98,9 @@ public sealed class VncClient : IDisposable
 
     /// <summary>服务器推送光标形状变化时触发（Cursor 伪编码 -239）。</summary>
     public event EventHandler<CursorUpdateEventArgs>? CursorChanged;
+
+    /// <summary>远端桌面分辨率变化时触发（DesktopSize 伪编码 -223）。帧缓冲已按新尺寸重建。</summary>
+    public event EventHandler<DesktopResizeEventArgs>? DesktopResized;
 
     /// <summary>发生错误时触发。</summary>
     public event EventHandler<Exception>? ErrorOccurred;
@@ -315,6 +336,7 @@ public sealed class VncClient : IDisposable
             EncodingTypes.CopyRect,
             EncodingTypes.Raw,
             EncodingTypes.Cursor,            // 伪编码：服务器以光标形状推送，客户端本地渲染
+            EncodingTypes.DesktopSize,       // 伪编码：远端改分辨率时通知新尺寸，客户端重建帧缓冲
             EncodingTypes.ContinuousUpdates  // 伪编码：协商连续更新（服务器支持则主动推帧，省往返延迟）
         };
         _protocol.WriteSetEncodings(preferredEncodings);
@@ -692,6 +714,14 @@ public sealed class VncClient : IDisposable
                 continue;
             }
 
+            // DesktopSize 伪编码(-223)：w/h 是新的桌面尺寸，不携带像素数据。
+            // 重建帧缓冲后，本次更新里后续的矩形已经是按新尺寸发的。
+            if (encodingType == EncodingTypes.DesktopSize)
+            {
+                HandleDesktopResize(w, h);
+                continue;
+            }
+
             // CopyRect：内联处理（读取源坐标后在帧缓冲内复制）
             if (encodingType == EncodingTypes.CopyRect)
             {
@@ -719,6 +749,28 @@ public sealed class VncClient : IDisposable
 
         if (updatedRects.Count > 0)
             FramebufferUpdated?.Invoke(this, new FramebufferUpdateEventArgs(updatedRects));
+    }
+
+    /// <summary>
+    /// 处理 DesktopSize 伪编码(-223)：远端分辨率变了，按新尺寸重建帧缓冲并请求一次完整刷新。
+    /// 旧画面无法沿用（行距全变了），重建后先是黑屏，随即被完整刷新覆盖。
+    /// </summary>
+    private void HandleDesktopResize(ushort width, ushort height)
+    {
+        if (width == 0 || height == 0) return;                                   // 非法尺寸，忽略
+        if (width == FramebufferWidth && height == FramebufferHeight) return;    // 尺寸没变
+
+        FramebufferWidth = width;
+        FramebufferHeight = height;
+        Framebuffer = new Framebuffer(width, height);
+
+        DesktopResized?.Invoke(this, new DesktopResizeEventArgs(width, height));
+        StatusChanged?.Invoke(this, $"远端分辨率已变为 {width}x{height}");
+
+        // 连续更新是按区域开启的，尺寸变了要按新区域重开；随后请求一次非增量的完整刷新。
+        if (_continuousUpdates)
+            EnableContinuousUpdates(0, 0, width, height);
+        RequestFramebufferUpdate(false, 0, 0, width, height);
     }
 
     /// <summary>

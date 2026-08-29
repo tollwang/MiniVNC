@@ -143,18 +143,42 @@ public class VncViewport : Control
         _pressedKeys.Clear();
         _lastSentX = _lastSentY = _lastSentMask = -1;
 
-        if (_client?.Framebuffer != null)
-        {
-            _bitmap = new WriteableBitmap(
-                _client.FramebufferWidth,
-                _client.FramebufferHeight,
-                96, 96,
-                PixelFormats.Bgra32,
-                null);
-
-            InvalidateVisual();
+        if (RecreateBitmap())
             Focus();
-        }
+    }
+
+    /// <summary>
+    /// 远端分辨率变化后按新尺寸重建位图（DesktopSize 伪编码 -223）。
+    /// 不重置输入状态——分辨率变化与用户按着的键无关。须在 UI 线程调用。
+    /// </summary>
+    public void OnFramebufferResized()
+    {
+        // 去重：已经是目标尺寸就不重建（重建会丢弃当前画面）
+        if (_bitmap != null && _client != null
+            && _bitmap.PixelWidth == _client.FramebufferWidth
+            && _bitmap.PixelHeight == _client.FramebufferHeight)
+            return;
+
+        RecreateBitmap();
+
+        // 鼠标坐标是按渲染区域换算的，尺寸变了要让下一次移动必定重发（去重值失效）
+        _lastSentX = _lastSentY = _lastSentMask = -1;
+    }
+
+    /// <summary>按当前帧缓冲尺寸新建位图。帧缓冲不存在时返回 false。</summary>
+    private bool RecreateBitmap()
+    {
+        if (_client?.Framebuffer == null) return false;
+
+        _bitmap = new WriteableBitmap(
+            _client.FramebufferWidth,
+            _client.FramebufferHeight,
+            96, 96,
+            PixelFormats.Bgra32,
+            null);
+
+        InvalidateVisual();
+        return true;
     }
 
     /// <summary>

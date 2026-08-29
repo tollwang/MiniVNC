@@ -7,7 +7,9 @@ namespace MiniVNC.Native;
 /// Windows剪贴板操作辅助类 - 提供线程安全的剪贴板读写操作
 /// </summary>
 /// <remarks>
-/// 剪贴板操作必须在STA线程上执行，此类封装了线程切换逻辑。
+/// 剪贴板 API 必须在 STA 线程上调用。本类的调用方都在 WPF UI 线程（本身即 STA），
+/// 少数非 STA 的情况统一转交应用的 Dispatcher 执行——比每次现开一个 STA 线程更省、也更可靠
+/// （新线程与本进程主 STA 不共享剪贴板所有权，取回的结果未必是调用方想要的）。
 /// </remarks>
 public static class ClipboardHelper
 {
@@ -16,48 +18,7 @@ public static class ClipboardHelper
     /// </summary>
     /// <returns>剪贴板中的文本内容，获取失败返回null</returns>
     public static string? GetText()
-    {
-        string? text = null;
-
-        // 确保剪贴板内容不是本应用设置的（避免循环同步）
-        if (Thread.CurrentThread.GetApartmentState() == ApartmentState.STA)
-        {
-            try
-            {
-                if (Clipboard.ContainsText())
-                {
-                    text = Clipboard.GetText();
-                }
-            }
-            catch
-            {
-                // 剪贴板访问可能失败，忽略错误
-            }
-        }
-        else
-        {
-            // 在非STA线程上创建STA线程执行剪贴板操作
-            Thread staThread = new(() =>
-            {
-                try
-                {
-                    if (Clipboard.ContainsText())
-                    {
-                        text = Clipboard.GetText();
-                    }
-                }
-                catch
-                {
-                    // 剪贴板访问可能失败，忽略错误
-                }
-            });
-            staThread.SetApartmentState(ApartmentState.STA);
-            staThread.Start();
-            staThread.Join(1000); // 最多等待1秒
-        }
-
-        return text;
-    }
+        => Run(() => Clipboard.ContainsText() ? Clipboard.GetText() : null);
 
     /// <summary>
     /// 设置剪贴板文本（线程安全）
@@ -66,85 +27,37 @@ public static class ClipboardHelper
     public static void SetText(string text)
     {
         if (string.IsNullOrEmpty(text)) return;
-
-        if (Thread.CurrentThread.GetApartmentState() == ApartmentState.STA)
-        {
-            try
-            {
-                Clipboard.SetText(text);
-            }
-            catch
-            {
-                // 剪贴板访问可能失败，忽略错误
-            }
-        }
-        else
-        {
-            Thread staThread = new(() =>
-            {
-                try
-                {
-                    Clipboard.SetText(text);
-                }
-                catch
-                {
-                    // 剪贴板访问可能失败，忽略错误
-                }
-            });
-            staThread.SetApartmentState(ApartmentState.STA);
-            staThread.Start();
-            staThread.Join(1000); // 最多等待1秒
-        }
-    }
-
-    /// <summary>
-    /// 尝试获取剪贴板文本
-    /// </summary>
-    /// <param name="text">输出文本内容</param>
-    /// <returns>是否成功获取</returns>
-    public static bool TryGetText(out string? text)
-    {
-        text = GetText();
-        return text != null;
+        Run<object?>(() => { Clipboard.SetText(text); return null; });
     }
 
     /// <summary>
     /// 检查剪贴板是否包含文本
     /// </summary>
     /// <returns>是否包含文本</returns>
-    public static bool ContainsText()
+    public static bool ContainsText() => Run(() => (bool?)Clipboard.ContainsText()) ?? false;
+
+    /// <summary>
+    /// 在 STA 线程上执行剪贴板操作。已在 STA 上则直接执行，否则转交 UI 线程。
+    /// 剪贴板可能被别的进程占用而失败，一律吞掉异常返回默认值——同步失败不应影响远程会话。
+    /// </summary>
+    private static T? Run<T>(Func<T?> action)
     {
-        bool result = false;
+        try
+        {
+            if (Thread.CurrentThread.GetApartmentState() == ApartmentState.STA)
+                return action();
 
-        if (Thread.CurrentThread.GetApartmentState() == ApartmentState.STA)
-        {
-            try
+            var dispatcher = Application.Current?.Dispatcher;
+            if (dispatcher == null) return default;
+            return dispatcher.Invoke(() =>
             {
-                result = Clipboard.ContainsText();
-            }
-            catch
-            {
-                // 忽略错误
-            }
-        }
-        else
-        {
-            Thread staThread = new(() =>
-            {
-                try
-                {
-                    result = Clipboard.ContainsText();
-                }
-                catch
-                {
-                    // 忽略错误
-                }
+                try { return action(); }
+                catch { return default; }
             });
-            staThread.SetApartmentState(ApartmentState.STA);
-            staThread.Start();
-            staThread.Join(1000);
         }
-
-        return result;
+        catch
+        {
+            return default;
+        }
     }
 }

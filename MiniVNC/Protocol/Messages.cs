@@ -326,6 +326,13 @@ public static class EncodingTypes
     public const int Cursor = -239;
 
     /// <summary>
+    /// 桌面尺寸伪编码(-223)。服务器在远端分辨率变化时借帧缓冲更新矩形通知新尺寸：
+    /// 矩形的 w/h 即新的帧缓冲尺寸，本身不携带任何像素数据。客户端据此重建帧缓冲与位图，
+    /// 并请求一次完整刷新。不协商此编码时，Mac 改分辨率后画面会一直错乱直到手动重连。
+    /// </summary>
+    public const int DesktopSize = -223;
+
+    /// <summary>
     /// 连续更新伪编码(-313)。客户端协商支持后，服务器会回发 EndOfContinuousUpdates 表示支持，
     /// 客户端再发 EnableContinuousUpdates 开启——之后服务器对指定区域**主动推送**增量更新，
     /// 无需每帧再发 FramebufferUpdateRequest，省掉一次往返延迟、更跟手。服务器不支持时自动回退。

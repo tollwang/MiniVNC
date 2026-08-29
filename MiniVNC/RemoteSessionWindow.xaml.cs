@@ -2,10 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Threading;
 using MiniVNC.Controls;
 using MiniVNC.Core;
@@ -72,8 +74,20 @@ public partial class RemoteSessionWindow : Window
     /// </summary>
     private DispatcherTimer? _toolbarHideTimer;
 
-    /// <summary>剪贴板轮询定时器（需在关闭时停止，避免泄漏）。</summary>
-    private DispatcherTimer? _clipboardTimer;
+    /// <summary>本窗口的 HWND 源，用于挂接剪贴板变化通知（<c>WM_CLIPBOARDUPDATE</c>）。</summary>
+    private HwndSource? _hwndSource;
+
+    /// <summary>是否已向系统注册剪贴板监听（关闭时需要注销）。</summary>
+    private bool _clipboardListenerRegistered;
+
+    /// <summary>剪贴板内容变化通知消息。</summary>
+    private const int WmClipboardUpdate = 0x031D;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool AddClipboardFormatListener(IntPtr hwnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool RemoveClipboardFormatListener(IntPtr hwnd);
 
     /// <summary>用户主动关闭/断开标志。用于区分"用户关闭"与"意外断线"，避免误触发自动重连或关闭后竞态。</summary>
     private bool _userClosing = false;
@@ -81,7 +95,7 @@ public partial class RemoteSessionWindow : Window
     /// <summary>是否正在自动重连。</summary>
     private bool _reconnecting = false;
 
-    /// <summary>状态/剪贴板定时器是否已启动（确保只启动一次，重连时不重复）。</summary>
+    /// <summary>状态定时器是否已启动（确保只启动一次，重连时不重复）。</summary>
     private bool _timersStarted = false;
 
     /// <summary>自动重连最大尝试次数。</summary>
@@ -124,6 +138,7 @@ public partial class RemoteSessionWindow : Window
         _client.ServerClipboardChanged += OnServerClipboardChanged;
         _client.ErrorOccurred += OnError;
         _client.CursorChanged += OnCursorChanged;
+        _client.DesktopResized += OnDesktopResized;
     }
 
     /// <summary>解绑 VNC 客户端事件。</summary>
@@ -136,6 +151,7 @@ public partial class RemoteSessionWindow : Window
         _client.ServerClipboardChanged -= OnServerClipboardChanged;
         _client.ErrorOccurred -= OnError;
         _client.CursorChanged -= OnCursorChanged;
+        _client.DesktopResized -= OnDesktopResized;
     }
 
     /// <summary>
@@ -248,7 +264,9 @@ public partial class RemoteSessionWindow : Window
         _statusTimer.Tick += OnStatusTimerTick;
         _statusTimer.Start();
 
-        StartClipboardSync();
+        // 剪贴板监听由 OnSourceInitialized 注册，这里只补一次首发：
+        // 连接建立前就已经复制好的内容不会有通知，主动发一次省得用户再复制一遍。
+        SendLocalClipboardIfChanged();
     }
 
     /// <summary>
@@ -420,6 +438,19 @@ public partial class RemoteSessionWindow : Window
     }
 
     /// <summary>
+    /// 远端分辨率变化（DesktopSize 伪编码 -223）→ 按新尺寸重建位图。
+    /// 此刻帧缓冲已在客户端侧重建，完整刷新也已请求，这里只需让渲染跟上新尺寸。
+    /// </summary>
+    private void OnDesktopResized(object? sender, DesktopResizeEventArgs e)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            VncViewport.OnFramebufferResized();
+            TbResolution.Text = $"{e.Width}x{e.Height}";
+        });
+    }
+
+    /// <summary>
     /// 远程光标形状变化（Cursor 伪编码 -239）→ 在 UI 线程更新本地渲染的光标。
     /// </summary>
     private void OnCursorChanged(object? sender, CursorUpdateEventArgs e)
@@ -441,39 +472,67 @@ public partial class RemoteSessionWindow : Window
     }
 
     /// <summary>
-    /// 启动剪贴板同步
+    /// 窗口句柄就绪：注册系统剪贴板变化通知。
+    /// 早先是 500ms 轮询——<see cref="Clipboard"/> 是 OLE 调用，别的程序占着剪贴板时可能阻塞数百毫秒，
+    /// 而它跑在渲染所在的 UI 线程上，会让远程画面一顿一顿。改成由系统在真正变化时通知：
+    /// 平时零开销，且本窗口不在前台时的复制也能立刻同步过去。
     /// </summary>
-    private void StartClipboardSync()
+    protected override void OnSourceInitialized(EventArgs e)
     {
-        _clipboardTimer = new DispatcherTimer
-        {
-            Interval = TimeSpan.FromMilliseconds(500)
-        };
-        _clipboardTimer.Tick += (s, e) =>
-        {
-            if (_userClosing || !_clipboardSyncEnabled || !_client.IsConnected) return;
+        base.OnSourceInitialized(e);
 
-            // 窗口没被激活时不去碰剪贴板：Clipboard.GetText 是 OLE 调用，别的程序占用剪贴板时
-            // 可能阻塞数百毫秒，而这里跑在渲染所在的 UI 线程上——远程画面会跟着一顿一顿。
-            // 用户切回本窗口后 500ms 内就会轮到下一次 tick，本地复制的内容照样发得出去。
-            if (!IsActive) return;
+        IntPtr handle = new WindowInteropHelper(this).Handle;
+        if (handle == IntPtr.Zero) return;
 
-            try
+        _hwndSource = HwndSource.FromHwnd(handle);
+        _hwndSource?.AddHook(WndProcHook);
+        _clipboardListenerRegistered = AddClipboardFormatListener(handle);
+    }
+
+    /// <summary>窗口消息钩子：只关心剪贴板变化通知。</summary>
+    private IntPtr WndProcHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (msg == WmClipboardUpdate)
+            SendLocalClipboardIfChanged();
+        return IntPtr.Zero;
+    }
+
+    /// <summary>注销剪贴板监听并解除消息钩子（关闭窗口时调用，可重复调用）。</summary>
+    private void StopClipboardSync()
+    {
+        if (_hwndSource == null) return;
+
+        if (_clipboardListenerRegistered)
+        {
+            try { RemoveClipboardFormatListener(_hwndSource.Handle); } catch { /* 忽略 */ }
+            _clipboardListenerRegistered = false;
+        }
+        _hwndSource.RemoveHook(WndProcHook);
+        _hwndSource = null;
+    }
+
+    /// <summary>
+    /// 本地剪贴板有新内容则发往服务器。
+    /// 与"服务器内容写入本地"共用 <see cref="_lastClipboard"/> 判重：我们自己写入本地剪贴板同样会
+    /// 触发本通知，值相同即跳过，天然防回声。
+    /// </summary>
+    private void SendLocalClipboardIfChanged()
+    {
+        if (_userClosing || !_clipboardSyncEnabled || !_client.IsConnected) return;
+
+        try
+        {
+            var text = ClipboardHelper.GetText();
+            if (!string.IsNullOrEmpty(text) && text != _lastClipboard)
             {
-                var text = ClipboardHelper.GetText();
-                // 本地剪贴板有新内容（不等于上次见过的值）→ 发往服务器
-                if (!string.IsNullOrEmpty(text) && text != _lastClipboard)
-                {
-                    _lastClipboard = text;
-                    _client.SendCutText(text);
-                }
+                _lastClipboard = text;
+                _client.SendCutText(text);
             }
-            catch
-            {
-                // 剪贴板访问可能失败，忽略错误
-            }
-        };
-        _clipboardTimer.Start();
+        }
+        catch
+        {
+            // 剪贴板访问可能失败（别的程序占用中），忽略
+        }
     }
 
     /// <summary>
@@ -634,6 +693,9 @@ public partial class RemoteSessionWindow : Window
     {
         _clipboardSyncEnabled = !_clipboardSyncEnabled;
         UpdateStatus(_clipboardSyncEnabled ? "剪贴板同步已启用" : "剪贴板同步已禁用");
+
+        // 重新启用时补发一次：关闭期间的变化没有被处理，否则要等到用户下次复制才同步得上
+        if (_clipboardSyncEnabled) SendLocalClipboardIfChanged();
     }
 
     /// <summary>
@@ -747,7 +809,7 @@ public partial class RemoteSessionWindow : Window
         {
             _statusTimer?.Stop();
             _toolbarHideTimer?.Stop();
-            _clipboardTimer?.Stop();
+            StopClipboardSync();
             _client.Disconnect();
         }
         catch { /* 忽略断开时的错误 */ }
@@ -833,7 +895,7 @@ public partial class RemoteSessionWindow : Window
         _userClosing = true; // 阻止关闭后的自动重连与连接竞态
         _statusTimer?.Stop();
         _toolbarHideTimer?.Stop();
-        _clipboardTimer?.Stop();
+        StopClipboardSync();
 
         UnbindClientEvents();
         try { _client.Dispose(); } catch { /* 忽略释放时的错误 */ }

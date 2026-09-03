@@ -209,6 +209,7 @@ public partial class RemoteSessionWindow : Window
                 // 连接过程中窗口已被关闭：安全退出，不再操作已释放的对象
                 if (_userClosing) return;
 
+                VncViewport.ScrollLinesPerNotch = _settings.ScrollLinesPerNotch;
                 VncViewport.SetClient(_client);
                 _client.StartUpdateLoop();
                 _lastConnectTime = DateTime.UtcNow;

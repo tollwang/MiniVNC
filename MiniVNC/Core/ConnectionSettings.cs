@@ -113,6 +113,13 @@ public sealed class ConnectionSettings
     public bool AutoReconnect { get; set; } = true;
 
     /// <summary>
+    /// 滚轮每格发送给远端的点击数。0 = 跟随 Windows 的"每次滚动行数"设置（默认 3）。
+    /// 远端一次点击滚多少由 macOS 决定，两边不一定对得上，故留成可调项：嫌快调小、嫌慢调大。
+    /// </summary>
+    [JsonPropertyName("scrollLinesPerNotch")]
+    public int ScrollLinesPerNotch { get; set; } = 0;
+
+    /// <summary>
     /// 此连接配置的创建时间。
     /// </summary>
     [JsonPropertyName("createdAt")]
@@ -306,7 +313,8 @@ public sealed class ConnectionSettings
             ViewOnly = this.ViewOnly,
             Quality = this.Quality,
             ColorDepth = this.ColorDepth,
-            AutoReconnect = this.AutoReconnect
+            AutoReconnect = this.AutoReconnect,
+            ScrollLinesPerNotch = this.ScrollLinesPerNotch
         };
     }
 

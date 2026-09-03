@@ -261,6 +261,7 @@ public class ConnectionDialog : Window
     private TextBox? _tbUser;
     private PasswordBox? _pbPassword;
     private ComboBox? _cbColorDepth;
+    private ComboBox? _cbScrollSpeed;
     private CheckBox? _cbViewOnly;
     private CheckBox? _cbAutoReconnect;
 
@@ -294,6 +295,7 @@ public class ConnectionDialog : Window
             Username = settings.Username,
             Password = settings.Password,
             ColorDepth = settings.ColorDepth,
+            ScrollLinesPerNotch = settings.ScrollLinesPerNotch,
             ViewOnly = settings.ViewOnly,
             AutoReconnect = settings.AutoReconnect,
             Quality = settings.Quality,
@@ -321,9 +323,9 @@ public class ConnectionDialog : Window
         Owner = Application.Current.MainWindow;
 
         var grid = new Grid { Margin = new Thickness(16) };
-        // 6 个输入字段 + 2 个勾选项 + 1 个按钮行 = 9 行（均 Auto，高度随内容）。
+        // 7 个输入字段 + 2 个勾选项 + 1 个按钮行 = 10 行（均 Auto，高度随内容）。
         // 不再需要末尾的 Star 填充行——窗口已改为 SizeToContent 自适应高度。
-        for (int i = 0; i < 9; i++)
+        for (int i = 0; i < 10; i++)
         {
             grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         }
@@ -335,6 +337,7 @@ public class ConnectionDialog : Window
         AddTextField(grid, row++, "用户名 (Mac 账户, 可选):", ref _tbUser, _settings.Username);
         AddPasswordField(grid, row++, "密码:", ref _pbPassword, _settings.Password ?? "");
         AddColorDepthField(grid, row++, _settings.ColorDepth);
+        AddScrollSpeedField(grid, row++, _settings.ScrollLinesPerNotch);
         AddCheckBox(grid, row++, "仅查看模式（不发送鼠标/键盘）", ref _cbViewOnly, _settings.ViewOnly);
         AddCheckBox(grid, row++, "断线后自动重连", ref _cbAutoReconnect, _settings.AutoReconnect);
 
@@ -466,6 +469,43 @@ public class ConnectionDialog : Window
     }
 
     /// <summary>
+    /// 添加滚轮速度下拉字段。远端一次滚轮点击滚多少由 macOS 决定，Windows 这边无从得知，
+    /// 所以给一个可调项：默认跟随系统"每次滚动行数"，嫌快就调小、嫌慢就调大。
+    /// </summary>
+    private void AddScrollSpeedField(Grid grid, int row, int scrollLines)
+    {
+        var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 8) };
+        Grid.SetRow(panel, row);
+
+        panel.Children.Add(new TextBlock
+        {
+            Text = "滚轮速度:",
+            Foreground = new SolidColorBrush(Color.FromRgb(0x80, 0x80, 0x80)),
+            Margin = new Thickness(0, 0, 0, 4)
+        });
+
+        _cbScrollSpeed = new ComboBox
+        {
+            Background = new SolidColorBrush(Color.FromRgb(0x2D, 0x2D, 0x30)),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0x3E, 0x3E, 0x42))
+        };
+        _cbScrollSpeed.Items.Add(new ComboBoxItem { Content = "跟随 Windows 设置（推荐）", Tag = 0 });
+        _cbScrollSpeed.Items.Add(new ComboBoxItem { Content = "慢（每格 1 次）", Tag = 1 });
+        _cbScrollSpeed.Items.Add(new ComboBoxItem { Content = "中（每格 2 次）", Tag = 2 });
+        _cbScrollSpeed.Items.Add(new ComboBoxItem { Content = "快（每格 3 次）", Tag = 3 });
+        _cbScrollSpeed.Items.Add(new ComboBoxItem { Content = "很快（每格 5 次）", Tag = 5 });
+
+        _cbScrollSpeed.SelectedIndex = scrollLines switch
+        {
+            1 => 1, 2 => 2, 3 => 3, 5 => 4, _ => 0
+        };
+
+        panel.Children.Add(_cbScrollSpeed);
+        grid.Children.Add(panel);
+    }
+
+    /// <summary>
     /// 添加一个勾选项字段。
     /// </summary>
     private void AddCheckBox(Grid grid, int row, string label, ref CheckBox? checkBox, bool value)
@@ -520,6 +560,7 @@ public class ConnectionDialog : Window
         _settings.ColorDepth = (_cbColorDepth?.SelectedItem as ComboBoxItem)?.Tag is int depth ? depth : 32;
         _settings.ViewOnly = _cbViewOnly?.IsChecked == true;
         _settings.AutoReconnect = _cbAutoReconnect?.IsChecked == true;
+        _settings.ScrollLinesPerNotch = (_cbScrollSpeed?.SelectedItem as ComboBoxItem)?.Tag is int lines ? lines : 0;
 
         DialogResult = true;
         Close();

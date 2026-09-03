@@ -49,6 +49,9 @@ public class VncViewport : Control
     /// <summary>当前自定义远程光标（来自 Cursor 伪编码 -239）。用于替换时释放上一个句柄。</summary>
     private System.Windows.Input.Cursor? _remoteCursor;
 
+    /// <summary>滚轮增量累积器（把不足一格的小增量攒起来，见 <see cref="WheelAccumulator"/>）。</summary>
+    private readonly WheelAccumulator _wheel = new();
+
     #region 依赖属性
 
     /// <summary>
@@ -142,6 +145,7 @@ public class VncViewport : Control
         _buttonMask = 0;
         _pressedKeys.Clear();
         _lastSentX = _lastSentY = _lastSentMask = -1;
+        _wheel.Reset();
 
         if (RecreateBitmap())
             Focus();
@@ -397,15 +401,24 @@ public class VncViewport : Control
     }
 
     /// <summary>
-    /// 鼠标滚轮事件。按档数（每 120 一档）发送对应次数的滚轮点击。
+    /// 每格滚轮发送的点击数。0 = 跟随 Windows 的"每次滚动行数"设置（默认 3 行）。
+    /// 远端一次点击滚多少由 macOS 决定，两边未必对得上，所以留成可调项。
+    /// </summary>
+    public int ScrollLinesPerNotch { get; set; }
+
+    /// <summary>
+    /// 鼠标滚轮事件。增量先累积成整格再换算成点击数——
+    /// 精密触摸板/高分辨率滚轮会把一格拆成多次小增量，逐次向上取整会让远端滚动快出数倍。
     /// </summary>
     protected override void OnMouseWheel(MouseWheelEventArgs e)
     {
         base.OnMouseWheel(e);
         if (_client == null || e.Delta == 0) return;
 
-        int wheelBit = e.Delta > 0 ? 8 : 16; // 8=上滚, 16=下滚
-        int notches = Math.Max(1, Math.Abs(e.Delta) / 120);
+        var (clicks, up) = _wheel.Accumulate(e.Delta, EffectiveScrollLines());
+        if (clicks == 0) return;   // 还没攒满一格
+
+        int wheelBit = up ? 8 : 16; // 8=上滚, 16=下滚
 
         var pos = e.GetPosition(this);
         var rect = CalculateRenderRect();
@@ -415,11 +428,23 @@ public class VncViewport : Control
             _client.FramebufferHeight);
         int x = (int)remotePos.X, y = (int)remotePos.Y;
 
-        for (int i = 0; i < notches; i++)
+        for (int i = 0; i < clicks; i++)
         {
             _client.SendPointerEvent(x, y, _buttonMask | wheelBit);
             _client.SendPointerEvent(x, y, _buttonMask); // 释放滚轮
         }
+    }
+
+    /// <summary>
+    /// 每格实际发送几次点击。未显式设置时跟随 Windows 的"每次滚动行数"，
+    /// 让远端滚动速度与本机保持一致（该值为负表示"一次一屏"，按上限处理）。
+    /// </summary>
+    private int EffectiveScrollLines()
+    {
+        if (ScrollLinesPerNotch > 0) return ScrollLinesPerNotch;
+
+        int systemLines = SystemParameters.WheelScrollLines;
+        return systemLines <= 0 ? WheelAccumulator.MaxLinesPerNotch : systemLines;
     }
 
     #endregion

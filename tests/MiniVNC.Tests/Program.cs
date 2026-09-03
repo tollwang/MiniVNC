@@ -4,6 +4,7 @@ using MiniVNC.Tests;
 Console.WriteLine("MiniVNC 测试套件");
 
 HostAddressTests.Run();
+WheelTests.Run();
 FramebufferTests.Run();
 AuthTests.Run();
 await WireFormatTests.RunAsync();

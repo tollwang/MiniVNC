@@ -58,6 +58,7 @@ RFB 安全类型 30（Diffie-Hellman 密钥交换 + AES-128 加密凭据），�
 | 完整远程控制 | 鼠标（含滚轮、中键）、键盘全转发，Win→Cmd / Alt→Option 映射，CapsLock 正确处理 |
 | 主机地址灵活 | 支持 IP、域名、IPv6，以及 `host:port` 合写（自动拆分） |
 | 画质可选 | 高清全彩 32 位 / 流畅 16 位（RGB565，带宽减半） |
+| 滚轮速度可调 | 默认跟随 Windows「每次滚动行数」，可手动微调；正确支持精密触摸板 |
 | 多种编码 | ZRLE、Hextile、CopyRect、Raw，按优先级自动协商 |
 | 全屏/窗口模式 | 无边框全屏与窗口模式切换，悬浮工具栏 |
 | 自适应缩放 | 原始尺寸 / 适应窗口 / 拉伸填充 |
@@ -177,7 +178,7 @@ dotnet build -c Debug -p:SelfContained=false -p:PublishSingleFile=false -p:Runti
 dotnet run --project tests/MiniVNC.Tests
 ```
 
-108 项测试，全通过返回 0（CI 每次构建都会先跑一遍，失败即挡住发布）。测试项目刻意**不依赖 WPF**——
+122 项测试，全通过返回 0（CI 每次构建都会先跑一遍，失败即挡住发布）。测试项目刻意**不依赖 WPF**——
 它链接协议、网络、编解码、认证这些无 UI 依赖的源文件编译成纯 `net9.0` 控制台程序，
 所以在 macOS / Linux / Windows 上都能跑。同样零 NuGet 依赖，没有引入测试框架。
 

@@ -31,12 +31,13 @@
 
   <!--
     被测源文件（均不依赖 WPF）。
-    有意排除：Core/ConnectionSettings.cs（DPAPI 仅 Windows）、Input/*（依赖 System.Windows.Input）、
+    有意排除：Core/ConnectionSettings.cs（DPAPI 仅 Windows）、Input/MouseHandler.cs 与 KeyboardHandler.cs（依赖 System.Windows.Input）、
     Controls/*、Native/*、*.xaml.cs。
   -->
   <ItemGroup>
     <Compile Include="../../MiniVNC/Core/VncClient.cs" Link="src/Core/VncClient.cs" />
     <Compile Include="../../MiniVNC/Core/HostAddress.cs" Link="src/Core/HostAddress.cs" />
+    <Compile Include="../../MiniVNC/Input/WheelAccumulator.cs" Link="src/Input/WheelAccumulator.cs" />
     <Compile Include="../../MiniVNC/Protocol/*.cs" Link="src/Protocol/%(Filename)%(Extension)" />
     <Compile Include="../../MiniVNC/Encodings/*.cs" Link="src/Encodings/%(Filename)%(Extension)" />
     <Compile Include="../../MiniVNC/Network/*.cs" Link="src/Network/%(Filename)%(Extension)" />
